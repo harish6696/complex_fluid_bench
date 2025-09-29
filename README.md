@@ -1,12 +1,5 @@
 # Neptuna
-A repository to benchmark CFD datasets on different ML algorithms
-<div align="center">
-
-<picture>
-	<img src="./misc/neptuna_logo.svg" alt="Neptuna logo" width="500"/>
- 
- </picture>
-</div >
+A repository to benchmark two complex flow datasets: Laser Induced Droplet Explosion (LIDE) and Shock Induced Droplet aEROBREAKUP (SIDA) on different ML models.
 
 ## Installation
 Make sure to comment out lines starting with nvidia* inside environment.yml if there is no nvidia-GPU.
@@ -18,6 +11,5 @@ conda env create -f environment.yml
 ```
 After installation:
 ```bash
-conda activate neptuna
+conda activate complex_fluid_bench
 ```
-
