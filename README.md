@@ -1,5 +1,5 @@
-# Neptuna
-A repository to benchmark two complex flow datasets: Laser Induced Droplet Explosion (LIDE) and Shock Induced Droplet aEROBREAKUP (SIDA) on different ML models.
+# Complex Fluid Bench
+A repository to benchmark two complex flow datasets: Laser Induced Droplet Explosion (LIDE) and Shock Induced Droplet Aerobreakup (SIDA) on different ML models.
 
 ## Installation
 Make sure to comment out lines starting with nvidia* inside environment.yml if there is no nvidia-GPU.
