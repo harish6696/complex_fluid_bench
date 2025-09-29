@@ -1,64 +1,4 @@
-"""
-Custom Training Callbacks for CFD Model Training with Enhanced Logging and Visualization.
 
-This module provides specialized callback implementations for training models using the Hugging Face
-Transformers library. It extends the standard callback system with advanced Weights & Biases (W&B)
-integration, custom plotting capabilities, and enhanced evaluation workflows.
-
-Key Features:
-- Enhanced W&B callback with trial parameter logging and model configuration tracking
-- Custom evaluation callback handler supporting additional keyword arguments
-- Automated plotting and visualization during training with configurable epoch thresholds
-- Renormalization of predictions and labels for accurate visualization
-- Support for residual learning with proper value reconstruction
-- Memory-efficient plotting with configurable example limits
-- Integration with custom trainer control flow for plotting events
-
-Main Components:
-    CallbackHandler: Extended callback handler with custom evaluation and plotting events
-    WandbCallback: Enhanced W&B integration with trial tracking and model configuration
-    PlotOnEvalAndSaveCallback: Automated plotting callback with data renormalization
-    TrainerControl: Extended trainer control with plotting state management
-
-Callback Event Flow:
-    1. on_evaluate: Triggered after model evaluation, stores predictions and metadata
-    2. on_plot: Custom event for generating and logging visualizations
-    3. on_log: Enhanced logging with W&B integration and plot artifact support
-    4. on_train_end: Cleanup and finalization of logging sessions
-
-Example Usage:
-    >>> from utils.custom_callbacks import WandbCallback, PlotOnEvalAndSaveCallback
-    >>> from transformers import Trainer
-    >>> 
-    >>> # Initialize callbacks
-    >>> wandb_callback = WandbCallback()
-    >>> plot_callback = PlotOnEvalAndSaveCallback()
-    >>> 
-    >>> # Create trainer with custom callbacks
-    >>> trainer = Trainer(
-    ...     model=model,
-    ...     args=training_args,
-    ...     train_dataset=train_dataset,
-    ...     eval_dataset=eval_dataset,
-    ...     callbacks=[wandb_callback, plot_callback]
-    ... )
-    >>> 
-    >>> # Training will automatically trigger plotting and logging
-    >>> trainer.train()
-
-Configuration Options:
-    The callbacks support various configuration options through training arguments:
-    - plot_after_epoch: Epoch threshold(s) for enabling plotting (int or list)
-    - n_eval_plot_examples: Number of validation examples to plot (default varies by callback)
-    - trial_number: Trial identifier for hyperparameter optimization
-    - run_name: W&B run name for experiment organization
-
-Notes:
-    This module modifies the base Transformers callback system by:
-    1. Monkey-patching TrainerCallback to add on_plot event support.
-    2. Extending TrainerControl with should_plot flag.  
-    3. Patching the trainer module to use the extended control class.
-"""
 from transformers.integrations.integration_utils import WandbCallback as WandbCallback_
 from transformers.integrations.integration_utils import rewrite_logs, is_torch_xla_available
 from transformers.trainer_callback import CallbackHandler as CallbackHandler_
@@ -563,7 +503,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
         self.output_log_config = kwargs['output_log_config']
         self.model_config = kwargs['model_config']
         self.global_step = state.global_step
-        self.residual_config = kwargs['data_config']['residual_config']
+        self.residual_config = None
         control.should_plot = True
 
     def on_plot(self, args, state, control, **kwargs):
@@ -669,7 +609,7 @@ class PlotOnEvalAndSaveCallback(TrainerCallback):
                     self.predictions,
                     data_config=self.data_config,
                     dataset=self.eval_dataset,
-                    residual_config=self.residual_config,
+                    residual_config=None,
                     conditioning_inputs=self.conditioning_inputs,
                 )
                 run_dir = os.path.join(part_1, part_2) if part_2 is not None else part_1

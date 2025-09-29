@@ -170,14 +170,6 @@ def preprocess_for_plotting(
         labels_renormed[:, :, c_idx] = re_normalize_data(labels[:, :, c_idx], stats, norm_strategy)
         predictions_renormed[:, :, c_idx] = re_normalize_data(predictions[:, :, c_idx], stats, norm_strategy)
 
-    # ------------------------------------------------------------------
-    # Reconstruct raw values for residual learning if requested
-    # ------------------------------------------------------------------
-    if residual_config is not None and residual_config.get("add_predicted_value_with_diff_loss", False):
-        base_value = inputs_renormed[:, -1:, ]
-        labels_renormed = labels_renormed.cumsum(axis=1) + base_value
-        predictions_renormed = predictions_renormed.cumsum(axis=1) + base_value
-
     return (
         inputs_renormed,
         labels_renormed,
@@ -200,7 +192,7 @@ def _plot_data(ax, data, ndim, ch_names=None, vmin_arr=None, vmax_arr=None):
     data : numpy.ndarray
         Data array with shape (C, *spatial_dims) where C is number of channels.
     ndim : int
-        Number of spatial dimensions (1, 2, or 3).
+        Number of spatial dimensions. Must be 2.
     ch_names : Optional[List[str]]
         Channel names for labeling. If None, uses default naming.
     vmin_arr, vmax_arr : Optional[Sequence[float]]
@@ -215,25 +207,13 @@ def _plot_data(ax, data, ndim, ch_names=None, vmin_arr=None, vmax_arr=None):
 
     Notes
     -----
-    - 1D data: Creates line plots with legends and visible ticks
     - 2D data: Creates heatmaps with colorbars and scientific notation
-    - 3D data: Currently shows placeholder text (not implemented)
     - Automatically handles aspect ratios for square vs rectangular domains
     - Uses 'coolwarm' colormap for 2D visualizations
     """
     C = data.shape[0]  # number of channels
 
-    if ndim == 1:
-        x = np.arange(data.shape[-1])
-        for c in range(C):
-            ax.plot(x, data[c], label=ch_names[c])
-            ax.legend(fontsize=8, loc="upper right")
-        # Show ticks for 1D plots
-        ax.set_xticks(x[::len(x)//5])  # Show 5 ticks
-        ax.tick_params(axis='both', labelsize=8)  # Set tick label size for both axes
-        #ax.set_ylabel('Value', fontsize=10)
-
-    elif ndim == 2:
+    if ndim == 2:
         # Determine if the domain is square or rectangular
         h, w = data[0].shape
         is_rectangular = (h != w)
@@ -301,9 +281,8 @@ def _plot_data(ax, data, ndim, ch_names=None, vmin_arr=None, vmax_arr=None):
                 sub_axes.append(sub_ax)
             return sub_axes
 
-    elif ndim == 3:
-        ax.text(0.5, 0.5, "3D multi-channel\nnot supported yet", ha="center", va="center", fontsize=10)
-        ax.axis('off')
+    else:
+        raise ValueError(f"Unsupported ndim: {ndim}. Only ndim=2 is supported.")
 
 
 def plot_examples(
@@ -317,7 +296,7 @@ def plot_examples(
     checkpoint_step=None,
     epoch=None,
     extra_info=None,
-    ndim=1,
+    ndim=2,
     num_examples=5,
     stride=1,
     save_dir="plots",
@@ -362,8 +341,8 @@ def plot_examples(
         Training epoch number for plot titles.
     extra_info : Optional[str]
         Additional information string for plot titles (e.g., dataset name).
-    ndim : int, default=1
-        Number of spatial dimensions (1, 2, or 3).
+    ndim : int, default=2
+        Number of spatial dimensions. Must be 2.
     num_examples : int, default=5
         Number of examples to plot from the batch.
     stride : int, default=1
@@ -509,10 +488,9 @@ def plot_examples(
 
             # Padding between individual plot and its xlabel (time indicator). 
             # If this padding is too large, the xlabel from one subplot can overlap the
-            # axes of the subplot in the row below.  Use a smaller value for 2-D plots
-            # (which typically have less vertical space per row) and a moderate value
-            # for 1-D plots.
-            x_label_pad = (55 if is_rectangular2d else 40) if ndim == 2 else 30
+            # axes of the subplot in the row below. Use different values for rectangular
+            # vs square 2D plots.
+            x_label_pad = 55 if is_rectangular2d else 40
 
             # Reduce horizontal spacing so each subplot takes up more space within its
             # column, effectively making the plots ~50 % larger without increasing the

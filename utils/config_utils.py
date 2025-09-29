@@ -10,7 +10,7 @@ import time
 
 from omegaconf import OmegaConf
 from utils.grid_utils import get_grid_resolution
-from utils.compute_stats import compute_statistics_parallel, compute_parameter_statistics
+from utils.compute_stats import compute_parameter_statistics
 
 __all__ = ["prepare_config"]
 
@@ -106,92 +106,52 @@ def prepare_config(cfg: DictConfig) -> DictConfig:
     # ------------------------------------------------------------------
     # 3) Normalisation stats
     # ------------------------------------------------------------------
-    if cfg["data_config"]["data_normalization_stats"] is None:
-        _t_start = time.perf_counter()
-        #TODO: compute_statistics_parallel doesnt provide median and iqr (on_fly_stats=True by default in parallel mode)
-        #NOTE: compute only the stats for the train dataset(test data is assumed to be inside/close to the train distribution)
-        stats, channel_names, _ = compute_statistics_parallel(
-            h5_paths=[os.path.join(cfg["data_config"]["dataset_directory_path"], "train.h5")],
-            residual_config=cfg["data_config"]["residual_config"],
-            filter_groups=cfg["data_config"]["filter_features"]["train_filter_groups"] ,
-            filter_frames=cfg["data_config"]["filter_features"]["train_filter_frames"],
-            frame_stride=cfg["data_config"]["sequence_info"][2],
-            on_fly_stats=True,
-            num_workers=4
-        )
-        print(f"compute_statistics took {time.perf_counter() - _t_start:.2f} seconds")
-        cfg["data_config"]["data_normalization_stats"] = stats
-    else:
-        raw_keys = list(cfg["data_config"]["data_normalization_stats"].keys())
-        # Collapse residual keys: if both "foo" and "foo_residual" exist, keep only "foo"
-        channel_names = []
-        for k in raw_keys:
-            base = k[:-9] if k.endswith("_residual") else k
-            if base not in channel_names:
-                channel_names.append(base)
-        if (cfg["data_config"]["residual_config"] is not None) and (
-            len(cfg["data_config"]["data_normalization_stats"])
-            != 2* len(channel_names)
-        ):
-            raise ValueError(
-                f"Insufficient statistics provided in the data_normalization_stats dictionary. Please provide statistics also for the residual channels."
+    raw_keys = list(cfg["data_config"]["data_normalization_stats"].keys())
+    # Collapse residual keys: if both "foo" and "foo_residual" exist, keep only "foo"
+    channel_names = []
+    for k in raw_keys:
+        base = k
+        if base not in channel_names:
+            channel_names.append(base)
+    # check if the desired quantities are present for the given normalization strategy
+    if cfg["data_config"]["data_normalization_strategy"] == "z_normalization":
+        missing_stats = {}
+        for ch_name, stat_dict in cfg["data_config"][
+            "data_normalization_stats"
+        ].items():
+            missing = [k for k in ("mean", "std") if k not in stat_dict]
+            if missing:
+                missing_stats[ch_name] = missing
+
+        if missing_stats:
+            details = "; ".join(
+                f"{ch}: {', '.join(miss)}" for ch, miss in missing_stats.items()
             )
-        # check if the desired quantities are present for the given normalization strategy
-        if cfg["data_config"]["data_normalization_strategy"] == "z_normalization":
-            missing_stats = {}
-            for ch_name, stat_dict in cfg["data_config"][
-                "data_normalization_stats"
-            ].items():
-                missing = [k for k in ("mean", "std") if k not in stat_dict]
-                if missing:
-                    missing_stats[ch_name] = missing
+            raise ValueError(
+                "Insufficient statistics. The following keys are missing -> "
+                + details
+            )
+    elif (
+        cfg["data_config"]["data_normalization_strategy"] == "min_max_normalization"
+    ):
+        missing_stats = {}
+        for ch_name, stat_dict in cfg["data_config"][
+            "data_normalization_stats"
+        ].items():
+            missing = [k for k in ("min", "max") if k not in stat_dict]
+            if missing:
+                missing_stats[ch_name] = missing
 
-            if missing_stats:
-                details = "; ".join(
-                    f"{ch}: {', '.join(miss)}" for ch, miss in missing_stats.items()
-                )
-                raise ValueError(
-                    "Insufficient statistics. The following keys are missing -> "
-                    + details
-                )
-        elif (
-            cfg["data_config"]["data_normalization_strategy"] == "min_max_normalization"
-        ):
-            missing_stats = {}
-            for ch_name, stat_dict in cfg["data_config"][
-                "data_normalization_stats"
-            ].items():
-                missing = [k for k in ("min", "max") if k not in stat_dict]
-                if missing:
-                    missing_stats[ch_name] = missing
-
-            if missing_stats:
-                details = "; ".join(
-                    f"{ch}: {', '.join(miss)}" for ch, miss in missing_stats.items()
-                )
-                raise ValueError(
-                    "Insufficient statistics for min-max normalization. The following keys are missing -> "
-                    + details
-                )
-        elif (
-            cfg["data_config"]["data_normalization_strategy"] == "robust_normalization"
-        ):
-            missing_stats = {}
-            for ch_name, stat_dict in cfg["data_config"][
-                "data_normalization_stats"
-            ].items():
-                missing = [k for k in ("median", "iqr") if k not in stat_dict]
-                if missing:
-                    missing_stats[ch_name] = missing
-
-            if missing_stats:
-                details = "; ".join(
-                    f"{ch}: {', '.join(miss)}" for ch, miss in missing_stats.items()
-                )
-                raise ValueError(
-                    "Insufficient statistics for robust normalization. The following keys are missing -> "
-                    + details
-                )
+        if missing_stats:
+            details = "; ".join(
+                f"{ch}: {', '.join(miss)}" for ch, miss in missing_stats.items()
+            )
+            raise ValueError(
+                "Insufficient statistics for min-max normalization. The following keys are missing -> "
+                + details
+            )
+    else:
+        raise ValueError(f"Unknown normalization strategy: {cfg['data_config']['data_normalization_strategy']}")
 
     # ------------------------------------------------------------------
     # Conditioning-parameter normalisation (min / max per dimension)

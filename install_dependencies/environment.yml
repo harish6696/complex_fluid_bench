@@ -1,13 +1,13 @@
 #To intall the dependencies from this file: 
 #conda env create -f environment.yml
 ## comment out the lines starting with nvidia* if there is no nvidia-GPU
-name: neptuna
+name: complex_fluid_bench
 channels:
   - conda-forge
   - defaults
 dependencies:
-  - _libgcc_mutex=0.1
-  - _openmp_mutex=5.1
+  #- _libgcc_mutex=0.1
+  #- _openmp_mutex=5.1
   - asttokens=3.0.0
   - bzip2=1.0.8
   - ca-certificates=2025.1.31
@@ -24,13 +24,13 @@ dependencies:
   - jedi=0.19.2
   - jupyter_client=8.6.3
   - jupyter_core=5.7.2
-  - ld_impl_linux-64=2.40
+  #- ld_impl_linux-64=2.40
   - libffi=3.4.4
-  - libgcc-ng=11.2.0
-  - libgomp=11.2.0
+  #- libgcc-ng=11.2.0
+  #- libgomp=11.2.0
   - libmpdec=4.0.0
   - libsodium=1.0.18
-  - libstdcxx-ng=11.2.0
+  #- libstdcxx-ng=11.2.0
   - libuuid=1.41.5
   - libxcb=1.17.0
   - matplotlib-inline=0.1.7
@@ -156,7 +156,7 @@ dependencies:
       - torchmetrics==1.6.1
       - tqdm==4.67.1
       - transformers==4.50.2
-      - triton==3.2.0
+      #- triton==3.2.0
       - typing-extensions==4.12.2
       - typing-inspection==0.4.1
       - urllib3==2.3.0

@@ -81,8 +81,6 @@ class Trainer(Trainer_):
         Original sequence length for labels without rollout.
     get_prediction_loss_for_eval_windows : bool
         Whether to compute prediction loss for validation/testing windows.
-    residual_config : Dict
-        Configuration for residual learning strategies.
     pushforward_config : Dict
         Configuration for pushforward training strategy.
     """
@@ -102,10 +100,10 @@ class Trainer(Trainer_):
         #self.original_label_seq_len = self.data_config.sequence_info[1] #number of predicted timesteps from the model (#no rollout timesteps considered)
         
         self.get_prediction_loss_for_eval_windows = False #TODO: Find a way to not hardcode this.
-
-        self.residual_config = self.data_config["residual_config"]
+        # Residual learning removed
+        self.residual_config = None
         # Push-forward configuration
-        self.pushforward_config = self.train_config["pushforward_config"] if self.train_config is not None else None
+        self.pushforward_config = None
         # Enabled flag now lives inside the pushforward_config dict (key: "enabled").
         # If the key is absent we assume push-forward should run when a config is supplied.
         self.pushforward_enabled = self.pushforward_config is not None and bool(self.pushforward_config.get("enabled", True))
@@ -242,7 +240,7 @@ class Trainer(Trainer_):
             eval_split_ratio=self.train_config["eval_split_ratio"] if self.train_config is not None else None,
             eval_groups=self.data_config["eval_groups"],
             is_steady_state_prediction=self.data_config["is_steady_state_prediction"],
-            residual_config=self.data_config["residual_config"],
+            residual_config=None,
             pushforward_config=self.train_config["pushforward_config"] if self.train_config is not None else None,
             n_eval_rollouts=self.train_config["n_eval_rollouts"] if self.train_config is not None else None,
             n_infer_rollouts=self.infer_config["n_infer_rollouts"] if self.infer_config is not None else None,
@@ -279,11 +277,7 @@ class Trainer(Trainer_):
         }
 
         if not isinstance(train_dataset, torch.utils.data.IterableDataset):
-            dataloader_params["sampler"] = self._get_train_sampler() ## here we create a custom sampler inside this function, inside this function, the sampler is set to RandomSampler if accelerator_config={"use_seedable_sampler": False} 
-            #and if accelerator_config={"use_seedable_sampler": True} then SeedableRandomSampler (inside accelerate>data_loader.py, this SeedableRandomSampler is a subclass of RandomSampler and is required for distributed training). 
-            #(shuffle  CANNOT BE SET to true or false (Pytorch doesnt allow it) if a custom sampler is used..  the sampler is set to RandomSampler which will provide random indices inside __get_item__ function of the dataloader), 
-            # in a similar way, the _eval_sampler function has a SequentialSampler, regardless of the shuffle being true or false.
-            #"From pytorch documentation:  If sampler is specified, :attr:`shuffle` must not be specified."
+            dataloader_params["sampler"] = self._get_train_sampler()
             dataloader_params["drop_last"] = self.args.dataloader_drop_last
             dataloader_params["worker_init_fn"] = seed_worker
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
@@ -308,8 +302,6 @@ class Trainer(Trainer_):
         if eval_dataset is None and self.eval_dataset is None:
             raise ValueError("Trainer: evaluation requires an eval_dataset.")
 
-        # If we have persistent workers, don't do a fork bomb especially as eval datasets
-        # don't change during training
         dataloader_key = eval_dataset if isinstance(eval_dataset, str) else "eval"
         if (
             hasattr(self, "_eval_dataloaders")
@@ -392,6 +384,7 @@ class Trainer(Trainer_):
 
         # We use the same batch_size as for eval.
         return self.accelerator.prepare(DataLoader(test_dataset, **dataloader_params))
+    
     ##custom function, not inside transformers library
     def _forward_model_train(self, model, inputs):
         """
@@ -412,66 +405,13 @@ class Trainer(Trainer_):
         """
         batch_size, _, _, *spatial_dims = inputs["input_data"].shape
         base_value = inputs["input_data"][:,-1:,]
-        if not self.data_config.is_steady_state_prediction:
-            #TODO: Add more training strategies here in continuation of the if statement.
-            pushforward_unroll_steps = 0
-            if self.pushforward_enabled and self.pushforward_config is not None:
-                #########################################################
-                #Pushforward trick (for training)
-                #########################################################
-                num_steps_in_one_epoch = self.state.max_steps//self.state.num_train_epochs
-                pushforward_unroll_steps = self.select_pushforward_unroll_steps_for_training(current_epoch = self.state.global_step//num_steps_in_one_epoch)
-                with torch.no_grad(): #comment this out for multi-step autoregressive training
-                    for unroll_step in range(pushforward_unroll_steps):
-                        #print(f"Pushforward unroll step {unroll_step+1} of {pushforward_unroll_steps}")
-                        prediction = self._model_forward_fn(model, inputs)
-                        prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
-                        
-                        if self.residual_config is not None:
-                            #NOTE: In all the three cases, we need the raw values to do rollout
-                            raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
-                        
-                        if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length >= input_sequence length
-                            inputs = {
-                                        **inputs,
-                                        **{ # This part replaces the "input_data" of input with the prediction of the model. 
-                                            # So the new input is the output from the previous step.
-                                            #prediction.shape = torch.Size([B, label_seq_len, C_labels, x_resolution, y_resolution])
-                                                "input_data": (
-                                                    prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
-                                                ) if self.residual_config is None else (
-                                                    raw_prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the outputs so as to extract the input_sequence.
-                                                )
-                                        },
-                                }
-                            
-                        else: #input_sequence length > label_sequence length (the more usual case)
-                                inputs = {
-                                **inputs,
-                                **{ #this part replaces the "input_data" of input with the output of the model and concatenates part of the input whch is missing to make a complete input sequence
-                                    #So the new input is the output from the previous step.
-                                    "input_data": (
-                                        torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1)
-                                    ) if self.residual_config is None else (
-                                        torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], raw_prediction.detach()], dim=1)
-                                    )
-                                },
-                                        }
-        else: 
-            #steady state prediction
-            pushforward_unroll_steps = 0
             
         # NOTE:compute chain restored, the input_data is corrupted by the pushforward rollout steps (if any).
         prediction = self._model_forward_fn(model, inputs)
         
         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
-        
-        if self.residual_config is not None and (self.residual_config["add_predicted_value_with_raw_loss"] or self.residual_config["add_base_value_with_raw_loss"]):
-            #NOTE: For the cases: add_predicted_value_with_raw_loss or add_base_value_with_raw_loss, we need the raw values before loss is computed inside compute_loss().
-            raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
-            prediction = raw_prediction
-
-        return prediction, pushforward_unroll_steps
+    
+        return prediction
 
     ##overrides the one in the base class from transformers library
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None): 
@@ -498,12 +438,12 @@ class Trainer(Trainer_):
         ########################################################
         # Pushforward trick (for training)
         ########################################################
-        prediction, pushforward_unroll_steps = self._forward_model_train(model, inputs)
+        prediction = self._forward_model_train(model, inputs)
         #compute the training loss here. Assume l2 loss.
         loss_fn = nn.functional.mse_loss
-        #loss is computed only for the last rollout (pushforward trick!) (one-step MSE-loss), therefore no need to update the labels, just slice from the end of the "labels_including_rollouts" tensor
+        #(one-step MSE-loss),just slice from the end of the "labels_including_rollouts" tensor
         #labels are automatically either the raw_values or the residuals. This is taken care inside load_data.py.
-        loss = loss_fn(prediction, inputs["label_including_rollouts"][:,(self.data_config.sequence_info[1]*pushforward_unroll_steps):(self.data_config.sequence_info[1]*(pushforward_unroll_steps+1)) ,]) 
+        loss = loss_fn(prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1],]) 
         #return_outputs is true only when doing eval or test. By default it is false for training.
         return (loss, prediction) if return_outputs else loss
 
@@ -531,155 +471,6 @@ class Trainer(Trainer_):
         prediction = prediction.reshape(batch_size, self.data_config["sequence_info"][1], len(self.data_config["filter_features"]["filter_out_channels"]), *spatial_dims)
         return prediction
     
-    #NOTE: There are two functions for eval_loss: 
-    # 1) compute_eval_loss, one which computes the mse loss of each window of the batch, takes the mean across the batch and assigns the same scalar value to all entries of the batch. 
-    # 2) compute_eval_without_loss, no window loss is computed, the predictions are accumulated as the batches get processed and loss is computed inside compute_metrics inside run.py
-    def compute_eval_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        """
-        Compute evaluation loss with autoregressive rollout and window-based loss computation.
-
-        Parameters
-        ----------
-        model : torch.nn.Module
-            The model to evaluate.
-        inputs : Dict[str, torch.Tensor]
-            Input tensors and labels.
-        return_outputs : bool, default=False
-            Whether to return model outputs along with loss.
-        num_items_in_batch : Optional[int]
-            Number of items in the batch.
-
-        Returns
-        -------
-        Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
-            Loss tensor, or tuple of (loss, outputs) if return_outputs=True.
-        """
-        #########################################################
-        #Autoregressive prediction (for eval and test)
-        #########################################################
-        # loss is computed per window for a batch of windows.
-        if self.output_all_steps: #this is set to true when self.rollout_steps is set in main.py
-            losses_ = []
-            predictions_ = []
-        else:
-            total_loss = 0
-        
-        prediction = self._forward_model_eval_or_test(model,inputs) 
-
-        loss_fn = nn.functional.mse_loss   #this is the eval_loss, which is NOT used for saving the best model.
-        if self.residual_config is None:
-            loss = loss_fn(prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]]) 
-        
-        else:
-            if self.residual_config["add_predicted_value_with_diff_loss"]:
-                #here the labels are the residuals.
-                base_value = inputs["input_data"][:,-1:,]
-                raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
-                #raw predictions are needed for continuing the autoregressive rollout.
-                loss = loss_fn(prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]]) 
-
-            if (self.residual_config["add_predicted_value_with_raw_loss"] or self.residual_config["add_base_value_with_raw_loss"]):
-                base_value = inputs["input_data"][:,-1:,]
-                raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
-                #here the labels are the raw values. raw_predictions are needed for both loss computation and for continuing the autoregressive rollout.
-                loss = loss_fn(raw_prediction, inputs["label_including_rollouts"][:,0:self.data_config.sequence_info[1]])
-
-        if self.output_all_steps:            
-            if self.residual_config is None:
-                # raw values are added  
-                predictions_.append(prediction.detach())
-            elif self.residual_config is not None and self.residual_config["add_predicted_value_with_diff_loss"]:
-                # predictions correspond to the difference and they are accumulated for the metrics.
-                predictions_.append(prediction.detach())
-            elif self.residual_config is not None and self.residual_config["add_predicted_value_with_raw_loss"]:
-                # raw_predictions are accumulated for the metrics as the loss is computed with the raw values.
-                predictions_.append(raw_prediction.detach())
-            else: #add_base_value_with_raw_loss
-                # raw_predictions are accumulated for the metrics as the loss is computed with the raw values.
-                predictions_.append(raw_prediction.detach())
-
-            #predictions_.append(raw_prediction.detach() if self.residual_config is not None else prediction.detach()) 
-            losses_.append(loss)
-        else:
-            total_loss += loss #loss is added up across all rollout_steps and we obtain a scalar. This is divided by rollout_steps at the end of the "if" statement
-
-        if not self.data_config.is_steady_state_prediction:
-        
-            for i in range(1,self.rollout_steps+1): 
-                #logger.debug(f"Eval/Test rollout step {i+1} of {self.rollout_steps+1}")
-                #prediction.shape = torch.Size([B, label_seq_length,C_labels, x_resolution, y_resolution, ...]) 
-                #recreate the inputs to be fed to the model for the next step
-                if (self.data_config.sequence_info[1] >= self.data_config.sequence_info[0]): #label_sequence length > input_sequence length
-                    inputs = {
-                        **inputs,
-                        **{ #this part replaces the "input_data" of input with the output of the model. 
-                            #So the new input is the output from the previous step.
-                            "input_data": (
-                                prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the predictions so as to extract the input_sequence.
-                            ) if self.residual_config is None else (
-                                raw_prediction[:,(self.data_config.sequence_info[1] - self.data_config.sequence_info[0]):,].detach() #slice the predictions so as to extract the input_sequence.
-                            )
-                        },
-                }
-                else: #input_sequence length > label_sequence length (the more usual case)
-                    inputs = {
-                        **inputs,
-                        **{ #this part replaces the "input_data" of input with the output of the model. 
-                            #So the new input is the output from the previous step.
-                            "input_data": ( 
-                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], prediction.detach()], dim=1) #slice a part of the input_data so as to extract the input_sequence.
-                            ) if self.residual_config is None else (
-                                torch.cat([inputs["input_data"][:,self.data_config.sequence_info[1]:,], raw_prediction.detach()], dim=1) #slice a part of the input_data so as to extract the input_sequence.
-                            )
-                        },
-                }
-                
-                prediction = self._forward_model_eval_or_test(model,inputs) 
-
-                #loss = loss_fn(prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]]) 
-                #if self.residual_config is not None:
-                #    raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
-
-                if self.residual_config is None:
-                    #here the predictions are the raw values and also the corresponding labels. 
-                    loss = loss_fn(prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]]) 
-                
-                else:
-                    if self.residual_config["add_predicted_value_with_diff_loss"]:
-                        raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
-                        #here the labels are the residuals.
-                        loss = loss_fn(prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]]) 
-
-                    if (self.residual_config["add_predicted_value_with_raw_loss"] or self.residual_config["add_base_value_with_raw_loss"]):
-                        #here the base_value is not reinitalized, it is continued from the previous step.
-                        raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
-                        #here the labels are the raw values.
-                        loss = loss_fn(raw_prediction, inputs["label_including_rollouts"][:,i*self.data_config.sequence_info[1]:(i+1)*self.data_config.sequence_info[1]])                
-
-                if self.output_all_steps:
-                    if self.residual_config is None:
-                        predictions_.append(prediction.detach())
-                    elif self.residual_config is not None and self.residual_config["add_predicted_value_with_diff_loss"]:
-                        predictions_.append(prediction.detach())
-                    elif self.residual_config is not None and self.residual_config["add_predicted_value_with_raw_loss"]:
-                        predictions_.append(raw_prediction.detach())
-                    else: #add_base_value_with_raw_loss
-                        predictions_.append(raw_prediction.detach())
-                    losses_.append(loss) 
-                else:
-                    total_loss += loss 
-
-        if self.output_all_steps:
-            predictions= torch.stack(predictions_, dim=1) #predictions.shape = torch.Size([B, rollout_steps+1, label_seq_length, C_output, *spatial_resolution])
-            loss = torch.stack(losses_, dim=0) #shape: (rollout_steps+1)
-
-        else:
-            loss = total_loss / (self.rollout_steps+1) #take the mean of the loss across all rollout_steps
-
-        return (loss, predictions) if return_outputs else loss 
-        #loss is a scalar which is the same for all the windows of the batch.
-        # inside evalutaion_loop(), the loss is repeated batch times before appending to the list of all_losses. 
-
     def compute_eval_without_loss(self, model, inputs):
         """
         Compute evaluation predictions without loss computation for memory efficiency.
@@ -703,14 +494,6 @@ class Trainer(Trainer_):
         prediction = self._forward_model_eval_or_test(model, inputs)
 
         # -------------------------------------------------------------
-        # Handle residual learning variants once per step
-        # -------------------------------------------------------------
-        use_residuals = self.residual_config is not None
-        if use_residuals:
-            base_value = inputs["input_data"][:, -1:]  # last known physical state
-            raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
-
-        # -------------------------------------------------------------
         # Pre-allocate storage when the caller wants *all* steps
         # -------------------------------------------------------------
         if self.output_all_steps:
@@ -721,10 +504,7 @@ class Trainer(Trainer_):
                 dtype=prediction.dtype,
                 device=prediction.device,
             )
-            if not use_residuals or self.residual_config["add_predicted_value_with_diff_loss"]:
-                predictions[:, 0].copy_(prediction.detach())
-            else:
-                predictions[:, 0].copy_(raw_prediction.detach())
+            predictions[:, 0].copy_(prediction.detach())
         else:
             predictions = None  # we will only return the last prediction
 
@@ -747,17 +527,13 @@ class Trainer(Trainer_):
             if seq_out >= seq_inp:
                 # label sequence ≥ input sequence (slice needed)
                 slice_from = seq_out - seq_inp
-                next_input = (
-                    prediction[:, slice_from:].detach()
-                    if not use_residuals
-                    else raw_prediction[:, slice_from:].detach()
-                )
+                next_input = prediction[:, slice_from:].detach()
             else:
                 # input sequence > label sequence (concatenate needed)
                 next_input = torch.cat(
                     [
                         curr_inputs["input_data"][:, seq_out:],
-                        prediction.detach() if not use_residuals else raw_prediction.detach(),
+                        prediction.detach(),
                     ],
                     dim=1,
                 )
@@ -766,67 +542,13 @@ class Trainer(Trainer_):
 
             # Forward pass for this rollout step -------------------------
             prediction = forward_fn(model, curr_inputs)
-
-            if use_residuals:
-                raw_prediction, base_value = self._compute_raw_prediction(prediction, base_value)
-
+            
             # Store the prediction if requested --------------------------
             if self.output_all_steps:
-                if not use_residuals or self.residual_config["add_predicted_value_with_diff_loss"]:
-                    #raw values are added OR predictions correspond to the difference and they are accumulated for the metrics.
-                    predictions[:, step].copy_(prediction.detach())
-                else:
-                    #raw_predictions are accumulated for the metrics as the loss is computed with the raw values.
-                    predictions[:, step].copy_(raw_prediction.detach())
+                predictions[:, step].copy_(prediction.detach())
 
         # Return either the full tensor (B, S, T, C, *spatial*) or the last prediction
         return predictions if self.output_all_steps else prediction.detach()
-
-    def select_pushforward_unroll_steps_for_training(self, current_epoch):
-        """
-        Select number of pushforward unroll steps based on training epoch and configuration.
-
-        Parameters
-        ----------
-        current_epoch : int
-            Current training epoch.
-
-        Returns
-        -------
-        int
-            Number of unroll steps to perform for pushforward training.
-
-        Raises
-        ------
-        ValueError
-            If current epoch is before the first deciding epoch threshold.
-        """
-        current_epoch_tensor = torch.tensor(current_epoch)
-        deciding_epochs = torch.tensor(self.train_config["pushforward_config"]["deciding_epochs"])
-        max_unrolls = self.train_config["pushforward_config"]["max_allowed_unroll_steps"]
-        relative_probabilities = self.train_config["pushforward_config"]["relative_probabilities"]
-
-        assert all(deciding_epochs[i] <= deciding_epochs[i + 1] for i in range(len(deciding_epochs) - 1))
-
-        idx = (current_epoch_tensor > deciding_epochs).sum().item()
-
-        if idx == 0:
-            raise ValueError("Training step is before first step threshold in pushforward config.")
-
-        unroll_choices = torch.tensor(max_unrolls[:idx])
-        prob_choices = torch.tensor(relative_probabilities[:idx])
-        
-        # Convert from relative probabilities to absolute probabilities
-        prob_choices = prob_choices / prob_choices.sum()
-
-        gen = torch.Generator().manual_seed(42+current_epoch)
-
-        sample_idx = torch.multinomial(prob_choices, num_samples=1, generator=gen).item()
-        unroll_steps = unroll_choices[sample_idx]
-
-        # Convert the 0-D tensor to a native Python int before returning so callers can use it
-        # directly in range() and arithmetic operations without needing an explicit .item() call.
-        return unroll_steps.item()
 
     ##custom function, not inside transformers library
     def set_eval_or_test_rollout_steps(self, rollout_steps=None, output_all_steps=False):
@@ -1922,120 +1644,3 @@ class Trainer(Trainer_):
 
         self.hp_search_backend = None
         return best_run, study
-
-def test_pushforward_unroll_steps():
-    """
-    Test function to verify the pushforward unroll steps selection logic.
-    Tests various scenarios including:
-    1. Normal case with multiple epochs
-    2. Edge case at first deciding epoch
-    3. Edge case at last deciding epoch
-    4. Error case before first deciding epoch
-    5. Progression of unroll steps across epochs
-    """
-    import torch
-    import numpy as np
-    from collections import defaultdict
-
-    # Mock trainer class for testing
-    class MockTrainer:
-        def __init__(self, pushforward_config):
-            self.pushforward_config = pushforward_config
-
-        def select_pushforward_unroll_steps_for_training(self, current_epoch):
-            current_epoch_tensor = torch.tensor(current_epoch)
-            deciding_epochs = torch.tensor(self.pushforward_config["deciding_epochs"])
-            max_unrolls = self.pushforward_config["max_allowed_unroll_steps"]
-            relative_probabilities = self.pushforward_config["relative_probabilities"]
-
-            assert all(deciding_epochs[i] <= deciding_epochs[i + 1] for i in range(len(deciding_epochs) - 1))
-
-            idx = (current_epoch_tensor > deciding_epochs).sum().item()
-
-            if idx == 0:
-                raise ValueError("Training step is before first step threshold in pushforward config.")
-
-            unroll_choices = torch.tensor(max_unrolls[:idx])
-            prob_choices = torch.tensor(relative_probabilities[:idx])
-            
-            # Normalize explicitly
-            prob_choices = prob_choices / prob_choices.sum()
-
-            # Fixed local RNG with seed 42
-            gen = torch.Generator().manual_seed(42+current_epoch)
-
-            sample_idx = torch.multinomial(prob_choices, num_samples=1, generator=gen).item()
-            unroll_steps = unroll_choices[sample_idx]
-
-            # Convert the 0-D tensor to a native Python int before returning so callers can use it
-            # directly in range() and arithmetic operations without needing an explicit .item() call.
-            return unroll_steps.item()
-
-    # Test configuration
-    pushforward_config = {
-        "deciding_epochs": [-1, 2, 50],  # Epochs where new unroll steps become available
-        "max_allowed_unroll_steps": [0, 1, 2],        # Maximum unroll steps at each stage
-        "relative_probabilities": [7, 2, 1]  # Relative probabilities for each stage
-    }
-
-    trainer = MockTrainer(pushforward_config)
-    
-    # Test 1: Normal case - multiple epochs
-    print("\nTest 1: Normal case - multiple epochs")
-    unroll_counts = defaultdict(int)
-    n_samples = 1000
-    
-    # for _ in range(n_samples):
-    #     unroll_steps = trainer.select_pushforward_unroll_steps_for_training(25)  # Between 20 and 30
-    #     unroll_counts[unroll_steps.item()] += 1
-    
-    # print("Unroll step distribution:")
-    # for steps, count in sorted(unroll_counts.items()):
-    #     print(f"Steps {steps}: {count/n_samples:.2%}")
-
-    # # Test 2: Edge case - at first deciding epoch
-    # print("\nTest 2: Edge case - at first deciding epoch")
-    # unroll_steps = trainer.select_pushforward_unroll_steps_for_training(10)
-    # print(f"Unroll steps at epoch 10: {unroll_steps}")
-
-    # # Test 3: Edge case - at last deciding epoch
-    # print("\nTest 3: Edge case - at last deciding epoch")
-    # unroll_steps = trainer.select_pushforward_unroll_steps_for_training(30)
-    # print(f"Unroll steps at epoch 30: {unroll_steps}")
-
-    # # Test 4: Error case - before first deciding epoch
-    # print("\nTest 4: Error case - before first deciding epoch")
-    # try:
-    #     unroll_steps = trainer.select_pushforward_unroll_steps_for_training(5)
-    # except ValueError as e:
-    #     print(f"Expected error: {e}")
-
-    # Test 5: Simple progression test
-    print("\nTest 5: Epoch vs Unroll Steps")
-    print("Epoch\tUnroll Steps")
-    print("-" * 20)
-    
-    # Store results for 5 runs
-    all_runs = []
-    for run in range(5):
-        run_results = []
-        for epoch in range(500):
-            try:
-                unroll_steps = trainer.select_pushforward_unroll_steps_for_training(epoch)
-                run_results.append(unroll_steps)
-            except ValueError:
-                run_results.append(-1)  # Use -1 to represent error
-        all_runs.append(run_results)
-    
-    # Compare results across runs
-    print("\nComparing results across 5 runs:")
-    print("Epoch\tRun1\tRun2\tRun3\tRun4\tRun5\tAll Same?")
-    print("-" * 70)
-    
-    for epoch in range(500):
-        values = [run[epoch] for run in all_runs]
-        all_same = all(v == values[0] for v in values)
-        print(f"{epoch}\t{values[0]}\t{values[1]}\t{values[2]}\t{values[3]}\t{values[4]}\t{all_same}")
-
-if __name__ == "__main__":
-    test_pushforward_unroll_steps()

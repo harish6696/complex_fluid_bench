@@ -4,7 +4,6 @@ import torch.nn as nn
 from torch import Tensor
 from utils.model_utils import PretrainedConfig
 from utils.activation_func import get_activation
-#from modulus>models>layers>fully_connected_layers.py
 
 class FNOConfig(PretrainedConfig):
     """Fourier neural operator (FNO) model.
@@ -90,14 +89,10 @@ class ConvNdFCLayer(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         
-        if dimension == 1:
-            Conv = nn.Conv1d
-        elif dimension == 2:
-            Conv = nn.Conv2d
-        elif dimension == 3:
-            Conv = nn.Conv3d
-        else:
-            raise ValueError(f"Unsupported dimension: {dimension}. Must be 1, 2, or 3.")
+        if dimension != 2:
+            raise ValueError(f"Unsupported dimension: {dimension}. Must be 2.")
+        
+        Conv = nn.Conv2d
         self.conv = Conv(self.in_channels, self.out_channels, kernel_size=1, bias=True)
         self.reset_parameters()
 
@@ -131,7 +126,6 @@ class ConvNdFCLayer(nn.Module):
 ######################################################
 # Spectral Side of the model
 ######################################################
-# from modulus>models>layers>spectral_layers.py  
 class SpectralConvNd(nn.Module):
     """1D Fourier layer. It does FFT, linear transform, and Inverse FFT.
 
@@ -161,24 +155,12 @@ class SpectralConvNd(nn.Module):
         self.modes = modes
         self.dimension = dimension
         self.scale = 1 / (in_channels * out_channels)
-        if self.dimension == 1:
-            self.weights = nn.ParameterList([
-                nn.Parameter(torch.empty(in_channels, out_channels, modes[0], 2))
-            ])
-        elif self.dimension == 2:
-            self.weights = nn.ParameterList([
+
+        self.weights = nn.ParameterList([
                 nn.Parameter(torch.empty(in_channels, out_channels, modes[0], modes[1], 2)),
                 nn.Parameter(torch.empty(in_channels, out_channels, modes[0], modes[1], 2))
             ])
-        elif self.dimension == 3:
-            self.weights = nn.ParameterList([
-                nn.Parameter(torch.empty(in_channels, out_channels, modes[0], modes[1], modes[2], 2)),
-                nn.Parameter(torch.empty(in_channels, out_channels, modes[0], modes[1], modes[2], 2)),
-                nn.Parameter(torch.empty(in_channels, out_channels, modes[0], modes[1], modes[2], 2)),
-                nn.Parameter(torch.empty(in_channels, out_channels, modes[0], modes[1], modes[2], 2))
-            ])
-        else:
-            raise ValueError(f"Unsupported dimension: {dimension}. Must be 1, 2, or 3.")
+
         self.reset_parameters()
 
     def compl_mul(
@@ -203,91 +185,36 @@ class SpectralConvNd(nn.Module):
         Tensor
             Product of complex multiplication
         """
-        # 1D (batch, in_channel, x ), (in_channel, out_channel, x) -> (batch, out_channel, x)
         # 2D (batch, in_channel, x, y), (in_channel, out_channel, x, y) -> (batch, out_channel, x, y)
-        # 3D (batch, in_channel, x, y, z), (in_channel, out_channel, x, y, z) -> (batch, out_channel, x, y, z)
         cweights = torch.view_as_complex(weights)
         return torch.einsum(einsum_eq, input, cweights)
 
     def forward(self, x: Tensor) -> Tensor:
         batchsize = x.shape[0]
-        if self.dimension == 1:
-            # Compute Fourier coeffcients up to factor of e^(- something constant)
-            x_ft = torch.fft.rfft(x)            
-            # Multiply relevant Fourier modes
-            out_ft = torch.zeros(
-                batchsize,
-                self.out_channels,
-                x.size(-1) // 2 + 1,
-                device=x.device,
-                dtype=torch.cfloat,
-            )
-            out_ft[:, :, : self.modes[0]] = self.compl_mul(
-                x_ft[:, :, : self.modes[0]],
-                self.weights[0],
-                "bix,iox->box"
-            )
-            # Return to physical space
-            x = torch.fft.irfft(out_ft, n=x.size(-1))
-        elif self.dimension == 2:
-            # Compute Fourier coeffcients up to factor of e^(- something constant)
-            x_ft = torch.fft.rfft2(x)
-            # Multiply relevant Fourier modes
-            out_ft = torch.zeros(
-                batchsize,
-                self.out_channels,
-                x.size(-2),
-                x.size(-1) // 2 + 1,
-                dtype=torch.cfloat,
-                device=x.device,
-            )
-            out_ft[:, :, : self.modes[0], : self.modes[1]] = self.compl_mul(
-                x_ft[:, :, : self.modes[0], : self.modes[1]],
-                self.weights[0],
-                "bixy,ioxy->boxy"
-            )
-            out_ft[:, :, -self.modes[0] :, : self.modes[1]] = self.compl_mul(
-                x_ft[:, :, -self.modes[0] :, : self.modes[1]],
-                self.weights[1],
-                "bixy,ioxy->boxy"
-            )
-            # Return to physical space
-            x = torch.fft.irfft2(out_ft, s=(x.size(-2), x.size(-1)))
-        elif self.dimension == 3:
-            # Compute Fourier coeffcients up to factor of e^(- something constant)
-            x_ft = torch.fft.rfftn(x, dim=[-3, -2, -1])
-            # Multiply relevant Fourier modes
-            out_ft = torch.zeros(
-                batchsize,
-                self.out_channels,
-                x.size(-3),
-                x.size(-2),
-                x.size(-1) // 2 + 1,
-                dtype=torch.cfloat,
-                device=x.device,
-            )
-            out_ft[:, :, : self.modes[0], : self.modes[1], : self.modes[2]] = self.compl_mul(
-                x_ft[:, :, : self.modes[0], : self.modes[1], : self.modes[2]], 
-                self.weights[0],
-                "bixyz,ioxyz->boxyz"
-            )
-            out_ft[:, :, -self.modes[0] :, : self.modes[1], : self.modes[2]] = self.compl_mul(
-                x_ft[:, :, -self.modes[0] :, : self.modes[1], : self.modes[2]], 
-                self.weights[1],
-                "bixyz,ioxyz->boxyz"
-            )
-            out_ft[:, :, : self.modes[0], -self.modes[1] :, : self.modes[2]]= self.compl_mul(
-                x_ft[:, :, : self.modes[0], -self.modes[1] :, : self.modes[2]], 
-                self.weights[2],
-                "bixyz,ioxyz->boxyz"
-            )
-            out_ft[:, :, -self.modes[0] :, -self.modes[1] :, : self.modes[2]] = self.compl_mul(
-                x_ft[:, :, -self.modes[0] :, -self.modes[1] :, : self.modes[2]], 
-                self.weights[3],
-                "bixyz,ioxyz->boxyz"
-            )
-            # Return to physical space
-            x = torch.fft.irfftn(out_ft, s=(x.size(-3), x.size(-2), x.size(-1)))
+        # Compute Fourier coeffcients up to factor of e^(- something constant)
+        x_ft = torch.fft.rfft2(x)
+        # Multiply relevant Fourier modes
+        out_ft = torch.zeros(
+            batchsize,
+            self.out_channels,
+            x.size(-2),
+            x.size(-1) // 2 + 1,
+            dtype=torch.cfloat,
+            device=x.device,
+        )
+        out_ft[:, :, : self.modes[0], : self.modes[1]] = self.compl_mul(
+            x_ft[:, :, : self.modes[0], : self.modes[1]],
+            self.weights[0],
+            "bixy,ioxy->boxy"
+        )
+        out_ft[:, :, -self.modes[0] :, : self.modes[1]] = self.compl_mul(
+            x_ft[:, :, -self.modes[0] :, : self.modes[1]],
+            self.weights[1],
+            "bixy,ioxy->boxy"
+        )
+        # Return to physical space
+        x = torch.fft.irfft2(out_ft, s=(x.size(-2), x.size(-1)))
+
         return x
 
     def reset_parameters(self):
@@ -297,9 +224,8 @@ class SpectralConvNd(nn.Module):
 #######################################################
 
 #######################################################
-# Decoder utils, same for 1D, 2D, 3D
+# Decoder utils, same for 2D
 #######################################################
-# from modulus>models>mlp>fully_connected.py
 class FCLayer(nn.Module):
     """Densely connected NN layer
     Parameters
@@ -343,11 +269,6 @@ class FCLayer(nn.Module):
                 "Cannot apply both weight normalization and weight factorization together, please select one."
             )
 
-        #if weight_norm:
-        #    self.linear = WeightNormLinear(in_features, out_features, bias=True)
-        #elif weight_fact:
-        #    self.linear = WeightFactLinear(in_features, out_features, bias=True)
-        #else:
         self.linear = nn.Linear(in_features, out_features, bias=True)
         self.reset_parameters()
 
@@ -391,14 +312,6 @@ class FullyConnected(nn.Module):
         Use weight norm on fully connected layers, by default False
     weight_fact : bool, optional
         Use weight factorization on fully connected layers, by default False
-
-    Example
-    -------
-    >>> model = modulus.models.mlp.FullyConnected(in_features=32, out_features=64)
-    >>> input = torch.randn(128, 32)
-    >>> output = model(input)
-    >>> output.size()
-    torch.Size([128, 64])
     """
 
     def __init__(
@@ -503,14 +416,8 @@ def build_fno(
     """construct FNO block.
     """
     # Build Neural Fourier Operators
-    if dimension == 1:
-        Conv = nn.Conv1d
-    elif dimension == 2:
-        Conv = nn.Conv2d
-    elif dimension == 3:
-        Conv = nn.Conv3d
-    else:
-        raise ValueError(f"Unsupported dimension: {dimension}. Must be 1, 2, or 3.")
+    Conv = nn.Conv2d
+
     spconv_layers = nn.ModuleList()
     conv_layers = nn.ModuleList()
     for _ in range(num_fno_layers):

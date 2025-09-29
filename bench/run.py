@@ -305,7 +305,7 @@ def run(cfg):
                     predictions=preds,
                     data_config=cfg["data_config"],
                     dataset=infer_ds,
-                    residual_config=cfg["data_config"].get("residual_config", None),
+                    residual_config=None,
                     conditioning_inputs=cond_inp_arr,
                 )
 
@@ -412,7 +412,7 @@ def run(cfg):
                     predictions=preds,
                     data_config=cfg["data_config"],
                     dataset=infer_ds,
-                    residual_config=cfg["data_config"].get("residual_config", None),
+                    residual_config=None,
                     conditioning_inputs=cond_inp_arr,
                 )
                 

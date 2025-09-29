@@ -36,8 +36,6 @@ def load_pretrained_model(model_config):
         "unet": ("models.UNet.unet", "UNet"),
         "fno": ("models.FNO.fno", "FNO"),
         "resnet": ("models.ResNet.resnet", "ResNet"),
-        "autodeeponet": ("models.DeepONet.deeponet", "AutoDeepONet"),
-        "cno": ("models.CNO.cno", "CNO"),
         "scot": ("models.ScOT.scot", "ScOT"),
         "vit": ("models.ViT.vit", "ViT"),
     }
@@ -388,7 +386,6 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         _print_config_block("MODEL CONFIG", model_config)
         _print_config_block("TRAIN CONFIG", train_config)
         _print_config_block("SCHEDULER CONFIG", scheduler_config)
-        #_print_config_block("OUTPUT LOG CONFIG", output_log_config)
         
         # Function to create a unique solo_inference directory
         def create_unique_inference_dir(base_dir):
@@ -449,7 +446,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                                                 data_normalization_stats=data_config["data_normalization_stats"],
                                                 data_normalization_strategy=data_config["data_normalization_strategy"],
                                                 is_steady_state_prediction=data_config["is_steady_state_prediction"],
-                                                residual_config=data_config["residual_config"],
+                                                residual_config=None,
                                                 n_infer_rollouts=infer_config["n_infer_rollouts"],
                                                 infer_from_random_timestep=infer_config["infer_from_random_timestep"],
                                                 infer_from_ic=infer_config["infer_from_ic"],
@@ -523,7 +520,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 predictions=preds,
                 data_config=data_config,
                 dataset=infer_ds,
-                residual_config=data_config.get("residual_config", None),
+                residual_config=None,
                 conditioning_inputs=cond_inp_arr,
             )
 
@@ -651,7 +648,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 predictions=preds,
                 data_config=data_config,
                 dataset=infer_ds,
-                residual_config=data_config.get("residual_config", None),
+                residual_config=None,
                 conditioning_inputs=cond_inp_arr,
             )
             

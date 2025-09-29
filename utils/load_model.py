@@ -29,7 +29,7 @@ def fetch_model(model_config: Dict,
         
         Required keys:
         - dimension : int
-            Spatial dimension of the data (1D, 2D, or 3D)
+            Spatial dimension of the data (2D)
         - filter_in_channels : List[str]
             Input channel names (length determines input channel count)
         - filter_out_channels : List[str]
@@ -66,28 +66,10 @@ def fetch_model(model_config: Dict,
         Requires: num_blocks, norm, n_groups
         Uses BasicBlock architecture
         
-    dilresnet : Dilated Residual Network
-        Requires: num_blocks, norm, n_groups
-        Uses DilatedBasicBlock architecture
-        
     unet : U-Net Architecture
-        Requires: norm, n_groups, channel_multiplier, is_attn,
-        mid_attn, n_blocks, use1x1
-        
-    deeponet_ffn : DeepONet with Feed-Forward Branch Network
-        Requires: branch_depth, trunk_depth, width, act_on_output
-        
-    deeponet_cnn : DeepONet with CNN Branch Network
-        Requires: branch_depth, trunk_depth, kernel_size, padding, width
-        
-    deeponet_resnet : DeepONet with ResNet Branch Network
-        Requires: branch_depth, trunk_depth, padding, width,
-        ResNet_block, num_blocks
-        
-    cno : Convolutional Neural Operator
-        Requires: cno_depth, n_blocks, n_blocks_bottleneck,
-        channel_multiplier, norm
-        
+        Requires: norm, n_groups, channel_multiplier,
+        n_blocks, use1x1
+                
     scot : Swin Transformer for Operator Learning
         Requires: patch_size, embed_dim, depths, num_heads,
         skip_connections, window_size, mlp_ratio, qkv_bias,
@@ -167,27 +149,7 @@ def fetch_model(model_config: Dict,
                     norm=model_config['norm']
                     )
         model = ResNet(config=config)
-    
-    elif model_name == "dilresnet":
-        from models.ResNet.resnet import ResNet
-        from models.ResNet.resnet_utils import ResNetConfig
-        config = ResNetConfig(
-                    in_channels=len(data_config['filter_features']['filter_in_channels']),
-                    out_channels=len(data_config['filter_features']['filter_out_channels']), 
-                    grid_resolution=data_config['grid_resolution'],
-                    sequence_info=data_config["sequence_info"],
-                    dimension=data_config['dimension'],
-                    num_blocks=model_config['num_blocks'],
-                    block="DilatedBasicBlock",
-                    latent_channels=model_config['latent_channels'],
-                    activation_fn_name=model_config['activation_fn_name'],
-                    coord_features=data_config['coord_features'],
-                    conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
-                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
-                    norm=model_config['norm']
-                    )
-        model = ResNet(config=config)
+
     
     elif model_name == "unet":
         from models.UNet.unet import UNet
@@ -200,8 +162,6 @@ def fetch_model(model_config: Dict,
                     sequence_info=data_config["sequence_info"], 
                     latent_channels=model_config['latent_channels'],
                     channel_multiplier=model_config['channel_multiplier'],
-                    is_attn=model_config['is_attn'],
-                    mid_attn=model_config['mid_attn'],
                     n_blocks=model_config['n_blocks'],
                     use1x1=model_config['use1x1'],
                     activation_fn_name=model_config['activation_fn_name'],
@@ -213,104 +173,6 @@ def fetch_model(model_config: Dict,
                     )
         model= UNet(config=config)
     
-    elif model_name == "deeponet_ffn":
-        from models.DeepONet.deeponet import AutoDeepONet
-        from models.DeepONet.deeponet_utils import DeepONetConfig
-        config = DeepONetConfig(
-                    in_channels=len(data_config['filter_features']['filter_in_channels']),
-                    out_channels=len(data_config['filter_features']['filter_out_channels']), 
-                    grid_resolution=data_config['grid_resolution'],
-                    sequence_info=data_config["sequence_info"],
-                    dimension=data_config['dimension'],
-                    branch_depth=model_config['branch_depth'],
-                    trunk_depth=model_config['trunk_depth'],
-                    width=model_config['width'],
-                    branch_net_str="FFN",
-                    act_on_output=model_config['act_on_output'], #only for FFN
-                    activation_fn_name=model_config['activation_fn_name'],
-                    coord_features=data_config['coord_features'],
-                    conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
-                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
-                    norm=model_config['norm']
-
-        )
-        model = AutoDeepONet(config=config)
-    
-    elif model_name == "deeponet_cnn":
-        from models.DeepONet.deeponet import AutoDeepONet
-        from models.DeepONet.deeponet_utils import DeepONetConfig
-        config = DeepONetConfig(                    
-                    in_channels=len(data_config['filter_features']['filter_in_channels']),
-                    out_channels=len(data_config['filter_features']['filter_out_channels']), 
-                    grid_resolution=data_config['grid_resolution'],
-                    sequence_info=data_config["sequence_info"],
-                    dimension=data_config['dimension'],
-                    branch_depth=model_config['branch_depth'],
-                    trunk_depth=model_config['trunk_depth'],
-                    kernel_size=model_config['kernel_size'],
-                    padding=model_config['padding'],
-                    latent_channels=model_config['latent_channels'],
-                    branch_net_str="CNN",
-                    width=model_config['width'],
-                    activation_fn_name=model_config['activation_fn_name'],
-                    coord_features=data_config['coord_features'],
-                    conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
-                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
-                    norm=model_config['norm']
-                    )
-        model = AutoDeepONet(config=config)
-    
-    elif model_name == "deeponet_resnet":
-        from models.DeepONet.deeponet import AutoDeepONet
-        from models.DeepONet.deeponet_utils import DeepONetConfig
-        config= DeepONetConfig(
-                    in_channels=len(data_config['filter_features']['filter_in_channels']),
-                    out_channels=len(data_config['filter_features']['filter_out_channels']), 
-                    grid_resolution=data_config['grid_resolution'],
-                    sequence_info=data_config["sequence_info"],
-                    dimension=data_config['dimension'],
-                    branch_depth=model_config['branch_depth'],
-                    trunk_depth=model_config['trunk_depth'],
-                    padding=model_config['padding'],
-                    latent_channels=model_config['latent_channels'],
-                    branch_net_str="ResNet",
-                    width=model_config['width'],
-                    activation_fn_name=model_config['activation_fn_name'],
-                    ResNet_block= model_config['ResNet_block'],
-                    num_blocks= model_config['num_blocks'],
-                    coord_features=data_config['coord_features'],
-                    conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
-                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
-                    norm=model_config['norm']
-        )
-        model = AutoDeepONet(config=config)
-    
-    elif model_name == "cno":
-        from models.CNO.cno_utils import CNOConfig
-        from models.CNO.cno import CNO
-        config = CNOConfig(
-                    in_channels=len(data_config['filter_features']['filter_in_channels']),
-                    out_channels=len(data_config['filter_features']['filter_out_channels']), 
-                    grid_resolution=data_config['grid_resolution'], 
-                    sequence_info=data_config['sequence_info'],
-                    dimension=data_config['dimension'],
-                    cno_depth=model_config['cno_depth'],
-                    n_blocks=model_config['n_blocks'],
-                    n_blocks_bottleneck=model_config['n_blocks_bottleneck'],
-                    channel_multiplier=model_config['channel_multiplier'],
-                    latent_channels=model_config['latent_channels'],
-                    coord_features=data_config['coord_features'],
-                    conditioning=data_config['conditioning_features']['include_conditioning_parameters'] , # if True ConditionalLayerNorm is used otherwise LayerNorm
-                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
-                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
-                    norm=model_config['norm']
-                    # Special activation function for CNO (defined in cno_utils.py))
-                    )
-        model = CNO(config=config)
-
     elif model_name == 'scot':
         from models.ScOT.scot_utils import ScOTConfig
         from models.ScOT.scot import ScOT 

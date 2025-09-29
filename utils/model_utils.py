@@ -68,13 +68,13 @@ class PretrainedConfig(PretrainedConfig_):
     out_channels : int, default=1
         Number of output channels for the model. This represents the number
         of different quantities the model should predict.
-    dimension : int, default=1
-        Spatial dimensionality of the input data (1D, 2D, or 3D).
+    dimension : int, default=2
+        Spatial dimensionality of the input data. Must be 2.
         Used for coordinate feature generation and spatial operations.
     grid_resolution : Union[int, List[int], Tuple[int]], default=[160]
         Spatial resolution for each dimension. Can be:
-        - int: Same resolution for all dimensions
-        - List/Tuple: Different resolution per dimension [H, W] or [D, H, W]
+        - int: Same resolution for both dimensions
+        - List/Tuple: Different resolution per dimension [H, W]
     sequence_info : Optional[List[int]], default=[1, 1, 1]
         Temporal sequence configuration as [input_seq_len, output_seq_len, stride].
         - input_seq_len: Number of input time steps
@@ -132,7 +132,7 @@ class PretrainedConfig(PretrainedConfig_):
         self,
         in_channels: int = 1,       # Number of input_channels
         out_channels: int = 1,      # Number of output channels
-        dimension: int = 1,
+        dimension: int = 2,
         grid_resolution: Union[int, List[int], Tuple[int]] = [160], # Input and Output spatial size (required )
         sequence_info: Optional[List[int]] = [1,1,1],
         coord_features: bool = True,

@@ -2,7 +2,6 @@ from typing import Callable
 import torch
 import torch.nn as nn
 from torch import Tensor
-from models.DeepONet.deeponet_utils import BasicBlockND4DeepONet
 from utils.model_utils import PretrainedConfig
 from utils.model_utils import CustomNorm
 from utils.model_utils import SequentialWithKwargs
@@ -11,7 +10,7 @@ class ResNetConfig(PretrainedConfig):
     """
     Args:
         block (str): 
-            BasicBlock, Dilblock only for now
+            BasicBlock, DilatedBasicBlock only for now
         num_blocks (List[int]): 
             Number of blocks in each stage
         latent_channels (int): 
@@ -81,20 +80,12 @@ class BasicBlockND(nn.Module):
     ) -> None:
         super().__init__()
         
-        if dimension == 1:
-            Conv = nn.Conv1d
-            kernel_size = (3,)
-            padding = (1,)
-        elif dimension == 2:
-            Conv = nn.Conv2d
-            kernel_size = (3, 3)
-            padding = (1, 1)
-        elif dimension == 3:
-            Conv = nn.Conv3d
-            kernel_size = (3, 3, 3)
-            padding = (1, 1, 1)
-        else:
-            raise ValueError(f"Unsupported dimension: {dimension}. Must be 1, 2, or 3.")
+        if dimension != 2:
+            raise ValueError(f"Unsupported dimension: {dimension}. Must be 2.")
+        
+        Conv = nn.Conv2d
+        kernel_size = (3, 3)
+        padding = (1, 1)
         
         #2X 3*3 convolutions Layers and corresponding CustomNorm
         self.conv1 = Conv(in_planes, planes, kernel_size=kernel_size, stride=stride, padding=padding, bias=True)        
@@ -154,17 +145,11 @@ class DilatedBasicBlockND(nn.Module):
     ) -> None:
         super().__init__()
 
-        if dimension == 1:
-            Conv = nn.Conv1d
-            kernel_size = (3,)
-        elif dimension == 2:
-            Conv = nn.Conv2d
-            kernel_size = (3, 3)
-        elif dimension == 3:
-            Conv = nn.Conv3d
-            kernel_size = (3, 3, 3)
-        else:
-            raise ValueError(f"Unsupported dimension: {dimension}. Must be 1, 2, or 3.")
+        if dimension != 2:
+            raise ValueError(f"Unsupported dimension: {dimension}. Must be 2.")
+        
+        Conv = nn.Conv2d
+        kernel_size = (3, 3)
         self.dilation = [1, 2, 4, 8, 4, 2, 1]
         dilation_layers = []
         for dil in self.dilation:
@@ -208,8 +193,6 @@ def getblock(block):
                 return BasicBlockND
         elif block == "DilatedBasicBlock":
                 return DilatedBasicBlockND
-        elif block == "BasicBlockND4DeepONet":
-                return BasicBlockND4DeepONet
         else:
             raise NotImplementedError(f"Unknown block: {block}")
     else:

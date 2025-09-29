@@ -11,13 +11,13 @@ dataset_directory_path:
 # Dataset 'folder' path
 # Paste the files named train.h5 (for train and validation) and test.h5 (for inference) inside this directory.
 
-dimension: 
+dimension: 2
 # Type: int
-# Dimension of the dataset> options- 1/2/3
+# Dimension of the dataset. Must be 2.
 
 grid_resolution: null 
-# Type: List[int, int, ...]
-# Cartesian grid resolution
+# Type: List[int, int]
+# Cartesian grid resolution for 2D data
 # Example: [256, 64] for 2D. 
 # If not provided, will be inferred automatically from the dataset
 
@@ -95,16 +95,6 @@ conditioning_features:
   # 1:
   #   min: 0.01
   #   max: 0.10
-
-residual_config: null
-  add_base_value_with_raw_loss:
-  #Type: bool 
-  add_predicted_value_with_diff_loss: 
-  #Type: bool
-  add_predicted_value_with_raw_loss: 
-  #Type: bool
-# If using this option, only one of the aboe option should be True.
-# Default is null.
 
 data_normalization_strategy: 
 # Type: str
