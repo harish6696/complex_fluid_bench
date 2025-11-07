@@ -27,7 +27,9 @@ Example Usage:
     python viz_dataset.py --h5-path data/train.h5 --all --frame-range 50 100 \
         --step 5 --title "CFD Simulation - Group {g}, t={t}"
     
-    # Only 2D data visualization is supported
+    # 3D volume visualization with isometric view
+    python viz_dataset.py --h5-path data/3d_data.h5 --volume-proj iso \
+        --groups "volume_data"
 
     # Normalized visualization using stats from a data-config YAML
     python viz_dataset.py --h5-path data/train.h5 \
@@ -137,7 +139,17 @@ def parse_args():
         Keep individual PNG frames after MP4 creation.
         Example: --keep-frames (no additional arguments needed)
     
-    **Note:** Only 2D data is supported.
+    **3D Volume Projection:**
+    --volume-proj : str, default='slice', choices=['slice', 'max', 'iso']
+        Method for projecting 3D volumes to 2D.
+        Example: --volume-proj slice (show single slice)
+        Example: --volume-proj max (maximum intensity projection)
+        Example: --volume-proj iso (isometric 3D rendering)
+    
+    --slice-index : int, optional
+        Index of slice to show for 'slice' projection (defaults to middle slice).
+        Example: --slice-index 15 (show 15th slice)
+        Example: --slice-index 0 (show first slice)
     
     **Reproducibility:**
     --seed : int, optional
@@ -172,7 +184,10 @@ def parse_args():
         --cmap plasma --title "CFD Results - {g} at t={t}" \
         --out ./results --keep-frames
     
-    # Only 2D data visualization is supported
+    # 3D volume visualization
+    python viz_dataset.py --h5-path data/3d_volume.h5 \
+        --volume-proj iso --groups "volume_data" \
+        --fps 8 --title "3D Volume - {proj} view"
     
     # Process all groups with reproducible random seed
     python viz_dataset.py --h5-path data/train.h5 --all \
@@ -251,7 +266,19 @@ def parse_args():
         action="store_true",
         help="If set, keep the individual PNG frame images instead of deleting them after MP4 creation.",
     )
-    # Note: 3D visualization options removed - only 2D data is supported
+    # 3-D visualisation options
+    parser.add_argument(
+        "--volume-proj",
+        choices=["slice", "max", "iso"],
+        default="slice",
+        help="Method to project 3-D volumes onto 2-D for plotting. 'slice' shows a single slice (see --slice-index); 'max' shows a maximum-intensity projection along the first volume axis; 'iso' shows an isometric view of the volume.",
+    )
+    parser.add_argument(
+        "--slice-index",
+        type=int,
+        default=None,
+        help="Index of the slice to show when --volume-proj=slice. Defaults to the middle slice if not specified.",
+    )
     # Normalization options
     parser.add_argument(
         "--data-config",
@@ -463,9 +490,9 @@ def plot_timestep(
     group_name : str, optional
         Name of the HDF5 group being visualized.
     volume_proj : str, default='slice'
-        Deprecated parameter - only 2D data is supported.
+        Method for 3D volume projection: 'slice', 'max', or 'iso'.
     slice_index : int, optional
-        Deprecated parameter - only 2D data is supported.
+        Index of slice to show for 'slice' projection (defaults to middle).
         
     Notes
     -----
@@ -475,7 +502,10 @@ def plot_timestep(
     - ndim == 4: treats second dim as channels if <= 3, otherwise as depth
     - ndim < 4: assumes single channel
     
-    Only 2D data is supported in this version.
+    For 3D volumes, three projection methods are available:
+    - 'slice': Shows a single 2D slice
+    - 'max': Maximum intensity projection along first axis
+    - 'iso': Isometric 3D rendering using marching cubes (requires scikit-image)
     
     Examples
     --------
@@ -534,11 +564,100 @@ def plot_timestep(
             else:
                 img = arr[t]
 
-            # Only support 2D data
-            if img.ndim != 2:
-                raise ValueError(f"Unsupported data dimensionality: {img.ndim}. Only 2D data is supported.")
-            
-            im_data = img
+            # Choose plotting method based on dimensionality
+            if volume_proj == "iso" and img.ndim == 3:
+                # Produce 3-D isometric plot of the volume
+                # Convert current 2-D axis to 3-D
+                ax.remove()
+                ax = fig.add_subplot(nrows, ncols, plot_counter, projection="3d")
+                # Use marching cubes if available, else fallback to voxel plot
+                try:
+                    cmap_obj = plt.get_cmap(cmap_scalar)
+                    vmin, vmax = float(img.min()), float(img.max())
+
+                    if marching_cubes is not None:
+                        verts, faces, normals, verts_intensity = marching_cubes(
+                            img, level=float(np.mean(img))
+                        )
+                        mesh = Poly3DCollection(verts[faces], alpha=0.7)
+                        if verts_intensity is None or len(verts_intensity) == 0:
+                            # derive vertex intensities by sampling original volume
+                            idx = np.clip(
+                                np.round(verts).astype(int), 0, np.array(img.shape) - 1
+                            )
+                            verts_intensity = img[idx[:, 0], idx[:, 1], idx[:, 2]]
+
+                        face_vals = verts_intensity[faces].mean(axis=1)
+                        colors = cmap_obj((face_vals - vmin) / (vmax - vmin + 1e-8))
+                        mesh.set_facecolors(colors)
+                        ax.add_collection3d(mesh)
+                        ax.set_xlim(0, img.shape[0])
+                        ax.set_ylim(0, img.shape[1])
+                        ax.set_zlim(0, img.shape[2])
+
+                        # Draw bounding box
+                        dx, dy, dz = img.shape
+                        corners = [
+                            (0, 0, 0),
+                            (dx, 0, 0),
+                            (dx, dy, 0),
+                            (0, dy, 0),
+                            (0, 0, dz),
+                            (dx, 0, dz),
+                            (dx, dy, dz),
+                            (0, dy, dz),
+                        ]
+                        edge_idx = [
+                            (0, 1),
+                            (1, 2),
+                            (2, 3),
+                            (3, 0),
+                            (4, 5),
+                            (5, 6),
+                            (6, 7),
+                            (7, 4),
+                            (0, 4),
+                            (1, 5),
+                            (2, 6),
+                            (3, 7),
+                        ]
+                        for i, j in edge_idx:
+                            xs = [corners[i][0], corners[j][0]]
+                            ys = [corners[i][1], corners[j][1]]
+                            zs = [corners[i][2], corners[j][2]]
+                            ax.plot(xs, ys, zs, color="black", linewidth=0.5)
+                    else:
+                        # Fallback rough voxel rendering
+                        filled = img > np.mean(img)
+                        img_norm = (img - vmin) / (vmax - vmin + 1e-8)
+                        voxel_colors = cmap_obj(img_norm)
+                        ax.voxels(filled, facecolors=voxel_colors, edgecolor="k")
+                    ax.set_axis_off()
+
+                    # Add colorbar for iso view
+                    from matplotlib.cm import ScalarMappable
+
+                    sm = ScalarMappable(
+                        cmap=cmap_obj, norm=plt.Normalize(vmin=vmin, vmax=vmax)
+                    )
+                    sm.set_array([])
+                    cb = fig.colorbar(sm, ax=ax, shrink=0.7)
+                    cb.formatter = ScalarFormatter(useOffset=False, useMathText=True)
+                    cb.update_ticks()
+                except Exception as e:
+                    ax.text(0.5, 0.5, 0.5, f"ISO err: {e}", ha="center")
+                im_data = None  # nothing for 2-D processing further
+
+            elif img.ndim == 3:  # 3-D volume -> project to 2-D
+                if volume_proj == "max":
+                    img2d = img.max(axis=0)
+                else:  # 'slice'
+                    idx = slice_index if slice_index is not None else img.shape[0] // 2
+                    idx = max(0, min(idx, img.shape[0] - 1))
+                    img2d = img[idx]
+                im_data = img2d
+            else:
+                im_data = img
 
             if im_data is not None and im_data.ndim == 2:
                 # 2D field -> image
@@ -567,8 +686,8 @@ def plot_timestep(
                 cb = fig.colorbar(im, ax=ax, shrink=0.7)
                 cb.formatter = ScalarFormatter(useOffset=False, useMathText=True)
                 cb.update_ticks()
-            elif im_data is not None and im_data.ndim != 2:
-                raise ValueError(f"Unsupported data dimensionality for plotting: {im_data.ndim}. Only 2D data is supported.")
+            elif im_data is not None and im_data.ndim == 1:
+                ax.plot(im_data)
             else:
                 if im_data is not None:
                     raise ValueError(

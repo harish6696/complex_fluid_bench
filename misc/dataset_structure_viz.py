@@ -76,7 +76,7 @@ if __name__ == "__main__":
         "data_path",
         type=str,
         nargs="?",  # optional positional argument
-        default="./data/fluids/Laser_Droplet/2D/test.h5",
+        default="/home/oskarkuuse/ScalingProject/complex_fluid_bench/data/fluids/KS/2D/train.h5",
         help="Path to the HDF5 file to analyze (default: %(default)s)",
     )
 
