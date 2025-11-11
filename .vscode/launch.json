@@ -12,6 +12,26 @@
         "program": "only_inference.py", 
         "console": "integratedTerminal",
     },
+    {
+      "name": "train 2D_KS_UNet",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "main.py",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+          "hydra.run.dir=.",
+          "hydra.output_subdir=null",
+          "data_config=fluids/KS/2d_ks_data_default.yaml",
+          "model_config=UNet/unet_1M",
+        ],
+      "env": {
+          "HYDRA_FULL_ERROR": "1",
+          "HYDRA_MAIN_DISABLE_RUN": "1",
+          "PYDEVD_WARN_SLOW_RESOLVE_TIMEOUT": "2.0"   // “-1” disables the warning entirely
+          }
+
+    },
     //###################################################################
     // 2D Aerobreakup
     //###################################################################
