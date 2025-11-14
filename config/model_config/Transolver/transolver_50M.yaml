@@ -1,0 +1,14 @@
+model_name: Transolver
+latent_channels: 256 #256
+num_layers: 32
+num_heads: 64
+embedding_dim: 2 #unused if unified_pos is True
+dropout: 0.0
+activation_fn_name: gelu
+mlp_ratio: 1
+slice_num: 128
+ref_grid_resolution: 64
+time_input: False
+unified_pos: True
+norm_layer_eps: 1e-5
+norm: 'layer' # layer, batch, group
