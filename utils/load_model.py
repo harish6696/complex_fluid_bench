@@ -149,7 +149,6 @@ def fetch_model(model_config: Dict,
                     norm=model_config['norm']
                     )
         model = ResNet(config=config)
-
     
     elif model_name == "unet":
         from models.UNet.unet import UNet
@@ -173,6 +172,30 @@ def fetch_model(model_config: Dict,
                     )
         model= UNet(config=config)
     
+    elif model_name == "cno":
+        from models.CNO.cno_utils import CNOConfig
+        from models.CNO.cno import CNO
+        config = CNOConfig(
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']), 
+                    grid_resolution=data_config['grid_resolution'], 
+                    sequence_info=data_config['sequence_info'],
+                    dimension=data_config['dimension'],
+                    cno_depth=model_config['cno_depth'],
+                    n_blocks=model_config['n_blocks'],
+                    n_blocks_bottleneck=model_config['n_blocks_bottleneck'],
+                    channel_multiplier=model_config['channel_multiplier'],
+                    latent_channels=model_config['latent_channels'],
+                    coord_features=data_config['coord_features'],
+                    conditioning=data_config['conditioning_features']['include_conditioning_parameters'] , # if True ConditionalLayerNorm is used otherwise LayerNorm
+                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
+                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
+                    norm=model_config['norm']
+                    # Special activation function for CNO (defined in cno_utils.py))
+                    )
+        model = CNO(config=config)
+
+
     elif model_name == 'scot':
         from models.ScOT.scot_utils import ScOTConfig
         from models.ScOT.scot import ScOT 
@@ -241,6 +264,40 @@ def fetch_model(model_config: Dict,
                     norm=model_config['norm'],
                     )
         model = ViT(config=config)
+
+    elif model_name == "transolver":
+        from models.Transolver.transolver_utils import TransolverConfig
+        from models.Transolver.transolver import Transolver
+
+        config = TransolverConfig(
+                    dimension=data_config['dimension'],
+                    in_channels=len(data_config['filter_features']['filter_in_channels']),
+                    out_channels=len(data_config['filter_features']['filter_out_channels']),
+                    grid_resolution=data_config['grid_resolution'],
+                    sequence_info=data_config['sequence_info'],
+                    latent_channels=model_config['latent_channels'],
+                    num_layers=model_config['num_layers'],
+                    num_heads=model_config['num_heads'],
+                    #hidden_dim=model_config['hidden_dim'],
+                    embedding_dim=model_config['embedding_dim'], #originally known as space_dim
+                    dropout=model_config['dropout'],
+                    activation_fn_name=model_config['activation_fn_name'],
+                    mlp_ratio=model_config['mlp_ratio'],
+                    #fun_dim=model_config['fun_dim'],
+                    #out_dim=model_config['out_dim'],
+                    slice_num=model_config['slice_num'],
+                    ref=model_config['ref_grid_resolution'],
+                    unified_pos=model_config['unified_pos'],
+                    time_input=model_config['time_input'],
+                    #H=model_config['H'], to be inferred from grid_resolution
+                    #W=model_config['W'], to be inferred from grid_resolution
+                    coord_features=data_config['coord_features'],
+                    conditioning=data_config['conditioning_features']['include_conditioning_parameters'], # if True ConditionalLayerNorm is used otherwise LayerNorm
+                    num_cond_params = data_config['conditioning_features']['num_cond_params'] if data_config['conditioning_features']['include_conditioning_parameters'] else 0,
+                    norm_layer_eps=model_config['norm_layer_eps'], # used in norm_layer both ConditionalLayerNorm and LayerNorm; add to variance of normalization to avoid division by zero and stabilize training
+                    norm=model_config['norm']
+                )
+        model = Transolver(config=config)
 
     else:
         raise ValueError(f"Model {model_name} is not implemented yet.") 

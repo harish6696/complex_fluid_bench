@@ -28,8 +28,8 @@ class UNetConfig(PretrainedConfig):
         channel_multiplier: Union[Tuple[int, ...], List[int]] = (1, 2, 2, 4),
         n_blocks: int = 2,
         use1x1: bool = False,
-        norm: str = "layer",
-        norm_layer_eps: float = 1e-5,
+        #norm: str = "layer",
+        #norm_layer_eps: float = 1e-5,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -37,8 +37,8 @@ class UNetConfig(PretrainedConfig):
         self.channel_multiplier = channel_multiplier
         self.n_blocks = n_blocks
         self.use1x1 = use1x1
-        self.norm = norm
-        self.norm_layer_eps = norm_layer_eps
+        #self.norm = norm
+        #self.norm_layer_eps = norm_layer_eps
 
 class ResidualBlockND(nn.Module):
     """Residual Block for 2D data.
@@ -98,7 +98,6 @@ class ResidualBlockND(nn.Module):
         h = self.conv2(h)
 
         return h + self.shortcut(x)
-
 
 class DownBlockND(nn.Module):
     """Generalized Down Block combining ResidualBlock for 2D inputs.

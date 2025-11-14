@@ -36,6 +36,7 @@ def load_pretrained_model(model_config):
         "unet": ("models.UNet.unet", "UNet"),
         "fno": ("models.FNO.fno", "FNO"),
         "resnet": ("models.ResNet.resnet", "ResNet"),
+        "cno": ("models.CNO.cno", "CNO"),
         "scot": ("models.ScOT.scot", "ScOT"),
         "vit": ("models.ViT.vit", "ViT"),
     }

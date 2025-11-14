@@ -6,7 +6,7 @@ dimension: 2
 grid_resolution: null
 eval_groups: null
 is_steady_state_prediction: False 
-sequence_info: [3, 2, 2]
+sequence_info: [3, 2, 1]
 # Available channels for Aerobreakup: ["Density", "Pressure", "Schlieren", "Velocity_X", "Velocity_Y", "Vorticity"]
 filter_features:
   train_filter_frames: null
