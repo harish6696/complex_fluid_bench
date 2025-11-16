@@ -107,7 +107,7 @@ dependencies:
       - multidict==6.1.0
       - networkx==3.4.2
       - numpy==2.2.1
-      # Comment out the following lines if you don't have a GPU
+      # Uncomment the following lines if you have a GPU
       #--------------------------------------------------------
       #- nvidia-cublas-cu12==12.4.5.8
       #- nvidia-cuda-cupti-cu12==12.4.127
@@ -155,3 +155,4 @@ dependencies:
       - urllib3==2.3.0
       - wandb==0.20.1
       - yarl==1.18.3
+      - einops==0.8.1
