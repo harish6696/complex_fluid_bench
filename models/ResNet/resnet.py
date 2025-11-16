@@ -1,3 +1,15 @@
+"""Residual network (ResNet) models for 2D operator learning.
+
+This module provides:
+- `ResNet`: a HuggingFace-style wrapper that selects the dimensionality-specific
+  implementation and handles optional conditioning inputs and reshaping.
+- `ResNet2D`: a 2D convolutional residual encoder-decoder constructed from
+  configurable residual blocks.
+
+Implementations are adapted from `https://github.com/pdearena/pdearena` and
+tailored to this project's configuration, activation, and coordinate-feature
+conventions.
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,8 +21,15 @@ from transformers import PreTrainedModel
 from .resnet_utils import ResNetConfig
 
 class ResNet(PreTrainedModel):
-    """Class to support ResNet like feedforward architectures"""
+    """High-level ResNet wrapper for grid-based operator learning.
 
+    - Resolve activation from config and construct `ResNet2D` when `dimension == 2`.
+    - Optionally concatenate conditioning inputs along the channel axis.
+    - Flatten input sequence and channels before passing to the backbone.
+
+    Adapted from `https://github.com/pdearena/pdearena`.
+    """
+    
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
     config_class = ResNetConfig
@@ -29,6 +48,7 @@ class ResNet(PreTrainedModel):
         )
            
     def build_resnet(self):
+        """Return the dimension-specific ResNet backbone class."""
         if self.config.dimension == 2:
             return ResNet2D
         else:
@@ -39,6 +59,25 @@ class ResNet(PreTrainedModel):
     def forward(self, 
                 input_data: Tensor,
                 **kwargs) -> Tensor: 
+        """Run the ResNet model end-to-end.
+
+        Parameters
+        ----------
+        input_data : Tensor
+            Input tensor of shape
+            [batch, input_seq, in_channels, grid_x, grid_y].
+        **kwargs :
+            Optional keyword arguments. Recognized:
+            - `conditioning_input_data`: Tensor of shape
+              [batch, input_seq, cond_channels, grid_x, grid_y] to be
+              concatenated with `input_data` along the channel dimension.
+
+        Returns
+        -------
+        Tensor
+            Output tensor of shape [batch, out_channels, grid_x, grid_y],
+            where `out_channels = config.out_size`.
+        """
 
         if "conditioning_input_data" in kwargs:
             #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
@@ -53,6 +92,15 @@ class ResNet(PreTrainedModel):
         return self.resnet(x, **kwargs)
                                         
 class ResNet2D(PreTrainedModel):
+    """2D ResNet backbone.
+
+    Architecture:
+    - Optional coordinate features concatenation (x, y) if enabled.
+    - Two 1x1 conv layers for input lifting with activation.
+    - A sequence of residual layers built from `resnet_utils.make_layer`.
+    - Two 1x1 conv layers to project to `out_size`.
+    - Optional padding before/after the main body to control output size.
+    """
     def __init__(self, config, activation_fn: nn.Module = nn.GELU()) -> None:
         super().__init__(config)
         self.activation = activation_fn
@@ -103,6 +151,20 @@ class ResNet2D(PreTrainedModel):
            
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
+        """Encode and decode a 2D grid with residual blocks.
+
+        Parameters
+        ----------
+        x : Tensor
+            Input grid tensor of shape [batch, in_channels, grid_x, grid_y].
+            If `config.coord_features` is True, two coordinate feature
+            channels are concatenated internally before the lifting convs.
+
+        Returns
+        -------
+        Tensor
+            Output grid tensor of shape [batch, out_channels, grid_x, grid_y].
+        """
         if x.dim() != 4:
             raise ValueError(
                 "Only 4D tensors [batch, in_channels, grid_x, grid_y] accepted for 2D ResNet"
@@ -131,6 +193,3 @@ class ResNet2D(PreTrainedModel):
         x = self.conv_out2(x)
                         
         return x
-
-
-    

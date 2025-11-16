@@ -1,3 +1,15 @@
+"""Utilities for Vision Transformer (ViT) components tailored to this project.
+
+Includes:
+- `ViTConfig`: config extending project `PretrainedConfig` with ViT-specific fields.
+- `ViTEmbeddings` and `ViTPatchEmbeddings`: patch tokenization and positional embeddings.
+- `ViTLayer`: a single Transformer block using project `CustomNorm`.
+- `ViTEncoder`: a stack of `ViTLayer`s producing `BaseModelOutput`.
+
+All components are adapted to use `latent_channels` as the hidden size and
+integrate with normalization and configuration utilities used throughout the
+project.
+"""
 
 from utils.model_utils import PretrainedConfig, CustomNorm
 import torch
@@ -6,11 +18,36 @@ from typing import Optional, Tuple, Union
 from transformers.models.vit.modeling_vit import ViTAttention, ViTIntermediate, ViTOutput, BaseModelOutput
 
 class ViTConfig(PretrainedConfig):
-    """
-    Args:
-        ToDo !!!
-        AND: rename params
-        
+    """Configuration for Vision Transformer components.
+
+    Parameters
+    ----------
+    num_hidden_layers : int, default=12
+        Number of transformer blocks.
+    num_attention_heads : int, default=12
+        Number of attention heads per block.
+    intermediate_size : int, default=3072
+        MLP hidden size inside each transformer block.
+    hidden_act : str, default="gelu"
+        Activation function used in intermediate layers.
+    hidden_dropout_prob : float, default=0.0
+        Dropout probability applied to embeddings and MLPs.
+    attention_probs_dropout_prob : float, default=0.0
+        Dropout probability applied to attention probabilities.
+    initializer_range : float, default=0.02
+        Std for weight initialization.
+    patch_size : int, default=16
+        Square patch size for patch embeddings.
+    qkv_bias : bool, default=True
+        Whether to add bias for QKV projections.
+    interpolate_pos_encoding : bool, default=False
+        If True, interpolate positional encodings for resized inputs.
+    **kwargs :
+        Additional fields consumed by `PretrainedConfig`, including:
+        - `grid_resolution`: Tuple[int, int], required for patch embeddings.
+        - `in_size`: int, input channels for patch embedding conv.
+        - `latent_channels`: int, embedding dimension (becomes `hidden_size`).
+
     """
 
     model_type = "vit"
@@ -47,9 +84,7 @@ class ViTConfig(PretrainedConfig):
 
 
 class ViTEmbeddings(nn.Module):
-    """
-    Construct the CLS token, position and patch embeddings. Optionally, also the mask token.
-    """
+    """Patch and position embeddings (optionally with mask token)."""
 
     def __init__(self, config: ViTConfig, use_mask_token: bool = False) -> None:
         super().__init__()
@@ -69,6 +104,22 @@ class ViTEmbeddings(nn.Module):
         bool_masked_pos: Optional[torch.BoolTensor] = None,
         interpolate_pos_encoding: bool = False,
     ) -> torch.Tensor:
+        """Embed input images into patch tokens and add positional encodings.
+
+        Parameters
+        ----------
+        pixel_values : Tensor
+            Input tensor of shape [batch, in_channels, height, width].
+        bool_masked_pos : BoolTensor, optional
+            Mask of shape [batch, num_patches] indicating which patches are masked.
+        interpolate_pos_encoding : bool, default=False
+            If True, interpolate position encodings to match current H/W.
+
+        Returns
+        -------
+        Tensor
+            Patch embeddings of shape [batch, num_patches, latent_channels].
+        """
         batch_size, num_channels, height, width = pixel_values.shape
         embeddings = self.patch_embeddings(pixel_values, interpolate_pos_encoding=interpolate_pos_encoding)
 
@@ -90,10 +141,11 @@ class ViTEmbeddings(nn.Module):
         return embeddings
     
 class ViTPatchEmbeddings(nn.Module):
-    """
-    This class turns `pixel_values` of shape `(batch_size, num_channels, height, width)` into the initial
-    `hidden_states` (patch embeddings) of shape `(batch_size, seq_length, latent_channels)` to be consumed by a
-    Transformer.
+    """Turn images into patch embeddings for transformer
+
+    Inputs of shape [batch, in_channels, height, width] are projected into
+    patch embeddings of shape [batch, seq_length, latent_channels] using a
+    strided convolution with kernel size equal to patch size.
     """
 
     def __init__(self, config):
@@ -111,6 +163,25 @@ class ViTPatchEmbeddings(nn.Module):
         self.projection = nn.Conv2d(num_channels, latent_channels, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, pixel_values: torch.Tensor, interpolate_pos_encoding: bool = False) -> torch.Tensor:
+        """Project input into patch tokens.
+
+        Parameters
+        ----------
+        pixel_values : Tensor
+            [batch, in_channels, height, width]
+        interpolate_pos_encoding : bool, default=False
+            If False, strictly enforce that (height, width) equals `grid_resolution`.
+
+        Returns
+        -------
+        Tensor
+            Patch embeddings of shape [batch, num_patches, latent_channels].
+
+        Raises
+        ------
+        ValueError
+            If input channels mismatch or sizes do not match when interpolation is disabled.
+        """
         batch_size, num_channels, height, width = pixel_values.shape
         if num_channels != self.num_channels:
             raise ValueError(
@@ -148,6 +219,22 @@ class ViTLayer(nn.Module):
         output_attentions: bool = False,
         **kwargs
     ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor]]:
+        """Apply attention and MLP with pre/post normalization and residuals.
+
+        Parameters
+        ----------
+        hidden_states : Tensor
+            [batch, seq_length, hidden_size]
+        head_mask : Optional[Tensor]
+            Attention head mask.
+        output_attentions : bool, default=False
+            Whether to return attention weights.
+
+        Returns
+        -------
+        Tuple[Tensor, ...]
+            layer_output and optionally attention weights.
+        """
         self_attention_outputs = self.attention(
             self.layernorm_before(hidden_states, **kwargs),  # in ViT, layernorm is applied before self-attention
             head_mask,
@@ -172,6 +259,7 @@ class ViTLayer(nn.Module):
     
 
 class ViTEncoder(nn.Module):
+    """Stack of `ViTLayer` blocks forming the transformer encoder."""
     def __init__(self, config: ViTConfig) -> None:
         super().__init__()
         self.config = config
@@ -187,6 +275,26 @@ class ViTEncoder(nn.Module):
         return_dict: bool = True,
         **kwargs
     ) -> Union[tuple, BaseModelOutput]:
+        """Run the transformer encoder.
+
+        Parameters
+        ----------
+        hidden_states : Tensor
+            Input of shape [batch, seq_length, hidden_size].
+        head_mask : Optional[Tensor]
+            Head mask broadcastable to [num_layers, batch, num_heads, seq_len, seq_len].
+        output_attentions : bool, default=False
+            Whether to return attention maps.
+        output_hidden_states : bool, default=False
+            Whether to return hidden states from all layers.
+        return_dict : bool, default=True
+            Whether to return a `BaseModelOutput`.
+
+        Returns
+        -------
+        BaseModelOutput or Tuple
+            `last_hidden_state`, and optionally `hidden_states`, `attentions`.
+        """
         all_hidden_states = () if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
 

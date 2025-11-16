@@ -1,6 +1,6 @@
 do_infer: True
 inference_directory: ./checkpoints
-dataset_directory_path: null  # if null, will use the dataset_directory_path from data_config.json inside the experiment directory.
+dataset_directory_path: /Users/harish/Desktop/iclr26_bench/data/fluids/Aerobreakup_DPUVVoS_dummy/2D  # if null, will use the dataset_directory_path from data_config.json inside the experiment directory.
 filter_features:
   infer_filter_frames: [null, null]
   infer_filter_groups: null

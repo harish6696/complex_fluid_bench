@@ -36,6 +36,7 @@ def load_pretrained_model(model_config):
         "unet": ("models.UNet.unet", "UNet"),
         "fno": ("models.FNO.fno", "FNO"),
         "resnet": ("models.ResNet.resnet", "ResNet"),
+        "autodeeponet": ("models.DeepONet.deeponet", "AutoDeepONet"),
         "cno": ("models.CNO.cno", "CNO"),
         "scot": ("models.ScOT.scot", "ScOT"),
         "vit": ("models.ViT.vit", "ViT"),
@@ -154,10 +155,28 @@ def get_trainer(
             *spatial,
         )
         targets = eval_pred.label_ids
+
+        preds_rho = preds[:, :, 0:1, :, :]
+        targets_rho = targets[:, :, 0:1, :, :]
+        
+        preds_rho_grad_x = np.gradient(preds_rho, axis=3)
+        preds_rho_grad_y = np.gradient(preds_rho, axis=4)
+        preds_rho_grad = np.sqrt(preds_rho_grad_x**2 + preds_rho_grad_y**2)
+
+        targets_rho_grad_x = np.gradient(targets_rho, axis=3)
+        targets_rho_grad_y = np.gradient(targets_rho, axis=4)
+        targets_rho_grad = np.sqrt(targets_rho_grad_x**2 + targets_rho_grad_y**2)
+
         # NOTE: more metrics to be added later here
-        return {
+        return{
             "l1_error": l1_error(preds, targets),
             "l2_error": l2_error(preds, targets),
+
+            "l1_rho_error": l1_error(preds_rho, targets_rho),
+            "l2_rho_error": l2_error(preds_rho, targets_rho),
+            
+            "l1_grad_rho_error": l1_error(preds_rho_grad, targets_rho_grad),
+            "l2_grad_rho_error": l2_error(preds_rho_grad, targets_rho_grad)
         }
 
     # Load pretrained model using the generic factory function
@@ -175,8 +194,6 @@ def get_trainer(
         output_log_config=output_log_config,
     )
     return trainer
-
-
 
 def find_checkpoint_path(experiment_dir):
     """
@@ -387,6 +404,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
         _print_config_block("MODEL CONFIG", model_config)
         _print_config_block("TRAIN CONFIG", train_config)
         _print_config_block("SCHEDULER CONFIG", scheduler_config)
+        #_print_config_block("OUTPUT LOG CONFIG", output_log_config)
         
         # Function to create a unique solo_inference directory
         def create_unique_inference_dir(base_dir):
@@ -447,7 +465,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                                                 data_normalization_stats=data_config["data_normalization_stats"],
                                                 data_normalization_strategy=data_config["data_normalization_strategy"],
                                                 is_steady_state_prediction=data_config["is_steady_state_prediction"],
-                                                residual_config=None,
+                                                residual_config=data_config["residual_config"],
                                                 n_infer_rollouts=infer_config["n_infer_rollouts"],
                                                 infer_from_random_timestep=infer_config["infer_from_random_timestep"],
                                                 infer_from_ic=infer_config["infer_from_ic"],
@@ -521,7 +539,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 predictions=preds,
                 data_config=data_config,
                 dataset=infer_ds,
-                residual_config=None,
+                residual_config=data_config.get("residual_config", None),
                 conditioning_inputs=cond_inp_arr,
             )
 
@@ -581,7 +599,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 ex_preds = preds[example_idx:example_idx+1]      # shape (1, R*T, C, *spatial)
                 ex_targets = targets[example_idx:example_idx+1]
                 per_rollout_metrics_ex = compute_metrics_for_n_rollouts(
-                    ex_preds, ex_targets, outputs_per_rollout=outputs_per_rollout
+                    ex_preds, ex_targets, metrics=("l1", "l2", "l1_rho", "l2_rho", "l1_grad_rho", "l2_grad_rho" ), outputs_per_rollout=outputs_per_rollout
                 )
                 ex_title = f"Per-rollout metrics ({data_config.get('dataset_name', 'dataset')} - random start, example {int(example_idx)})"
                 plot_rollout_metrics(
@@ -625,7 +643,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
 
             # Compute per-rollout metrics; also compute per-timestep metrics for IC start
             per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
-                preds, targets, outputs_per_rollout=outputs_per_rollout, include_per_timestep=True
+                preds, targets, outputs_per_rollout=outputs_per_rollout, metrics=("l1", "l2", "l1_rho", "l2_rho", "l1_grad_rho", "l2_grad_rho" ), include_per_timestep=True
             )
             
             errors = {}
@@ -649,7 +667,7 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 predictions=preds,
                 data_config=data_config,
                 dataset=infer_ds,
-                residual_config=None,
+                residual_config=data_config.get("residual_config", None),
                 conditioning_inputs=cond_inp_arr,
             )
             

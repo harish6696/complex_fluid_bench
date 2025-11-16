@@ -1,3 +1,14 @@
+"""Fourier Neural Operator (FNO) models for 2D operator learning.
+
+This module provides:
+- `FNO`: a HuggingFace-style wrapper that orchestrates the spectral encoder and
+  pointwise decoder.
+- `FNO2D`: the 2D spectral encoder built with Fourier layers.
+
+Implementations are adapted from NVIDIA's Physics-ML/physicsnemo and tailored
+to the conventions used in this project (conditioning inputs, grid/point
+reshaping helpers, and configurable activations/normalization).
+"""
 from typing import List, Tuple
 import torch
 import torch.nn as nn
@@ -11,12 +22,17 @@ from utils.grid_utils import twod_meshgrid
 from utils.model_utils import CustomNorm
 from .fno_utils import FNOConfig
 
-"""
-Adapted from https://github.com/NVIDIA/physicsnemo
-"""
-
 class FNO(PreTrainedModel):
-    """Fourier neural operator (FNO) model."""
+    """Fourier Neural Operator (FNO) wrapper.
+
+    High-level features:
+    1) flattens the temporal/channel sequence into a 2D grid tensor,
+    2) applies the spectral encoder (`FNO2D`),
+    3) decodes per-point features with a small MLP,
+    4) reshapes outputs back to a grid.
+
+    Adapted from `https://github.com/NVIDIA/physicsnemo`.
+    """
 
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
@@ -35,7 +51,7 @@ class FNO(PreTrainedModel):
         self.decoder_net = self.fno.decoder_net()
 
     def build_FNO(self):
-        """Get the FNO encoder based on the model dimensionality""" 
+        """Get the FNO encoder based on the model dimensionality."""
         if self.config.dimension == 2:
             return FNO2D
         else:
@@ -46,6 +62,25 @@ class FNO(PreTrainedModel):
     def forward(self, 
                 input_data: Tensor,
                 **kwargs) -> Tensor: 
+        """Run the FNO model end-to-end.
+
+        Parameters
+        ----------
+        input_data : Tensor
+            Input tensor of shape
+            [batch, input_seq, in_channels, grid_x, grid_y].
+        **kwargs :
+            Optional keyword arguments. Recognized:
+            - `conditioning_input_data`: Tensor of shape
+              [batch, input_seq, cond_channels, grid_x, grid_y] that will be
+              concatenated along the channel dimension before encoding.
+
+        Returns
+        -------
+        Tensor
+            Predicted field of shape [batch, out_channels, grid_x, grid_y],
+            where `out_channels = config.out_size`.
+        """
         
         if "conditioning_input_data" in kwargs:
             #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
@@ -73,7 +108,11 @@ class FNO(PreTrainedModel):
         return x
 
 class FNO2D(PreTrainedModel):
-    """2D Spectral encoder for FNO"""
+    """2D spectral encoder for FNO.
+
+    Applies a lifting network followed by multiple spectral (Fourier) layers
+    and residual conv blocks on 2D grids.
+    """
 
     def __init__(self, config, activation_fn: nn.Module) -> None:
         super().__init__(config)
@@ -113,6 +152,11 @@ class FNO2D(PreTrainedModel):
         )
 
     def decoder_net(self) -> nn.Module:
+        """Return the pointwise decoder MLP.
+
+        Maps latent per-point features of size `latent_channels` to
+        `out_size` output channels using a configurable stack of linear layers.
+        """
         return FullyConnected(
             in_features=self.config.latent_channels,
             layer_size=self.config.decoder_layer_size,
@@ -122,6 +166,21 @@ class FNO2D(PreTrainedModel):
         )
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
+        """Encode a 2D grid with spectral layers.
+
+        Parameters
+        ----------
+        x : Tensor
+            Input grid tensor of shape [batch, in_channels, grid_x, grid_y].
+            If `config.coord_features` is True, 2 coordinate channels are
+            concatenated internally before lifting.
+
+        Returns
+        -------
+        Tensor
+            Latent grid tensor of shape
+            [batch, latent_channels, grid_x, grid_y].
+        """
         if x.dim() != 4:
             raise ValueError(
                 "Only 4D tensors [batch, in_channels, grid_x, grid_y] accepted for 2D FNO"

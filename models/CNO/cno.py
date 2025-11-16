@@ -1,3 +1,14 @@
+"""Convolutional Neural Operator (CNO) models for grid-based operator learning.
+
+This module provides a config-driven implementation of a UNet-like operator
+network with hierarchical resolutions, residual sub-networks, and lift/project
+stages.
+
+Adapted from `https://github.com/camlab-ethz/ConvolutionalNeuralOperator` and
+tailored to this project's conventions (HuggingFace-style configs and
+PreTrainedModel base class, optional conditioning inputs, and coordinate
+features).
+"""
 import torch
 import torch.nn as nn
 from torch import Tensor
@@ -11,39 +22,29 @@ def _div_size(size, factor):
     return tuple(s // factor for s in size)
 
 class CNO(PreTrainedModel):
-    """Convolutional Neural Operator (CNO) model for learning mappings between function spaces.
+    """Convolutional Neural Operator (CNO).
 
-    The CNO architecture consists of an encoder-decoder structure with residual blocks, designed to learn
-    mappings between function spaces. It uses a hierarchical structure with multiple resolution levels
-    and incorporates residual connections for better gradient flow.
+    High-level:
+    - Lift: project input channels to latent space at full resolution.
+    - Encoder (D): downsampling path of `CNOBlock`s across multiple scales.
+    - Residual sub-networks: per-level ResNet modules before each downsample and
+      a bottleneck ResNet at the deepest level.
+    - ED expansion (I): alignment modules that ensure encoder/decoder feature-map
+      size compatibility when concatenating skips.
+    - Decoder (U): upsampling path of `CNOBlock`s with skip connections.
+    - Project: final projection back to `out_size` channels.
 
-    Architecture:
-        - Encoder: Downsampling path with residual blocks
-        - Bottleneck: Deepest residual block
-        - Decoder: Upsampling path with skip connections
-        - Lift/Projection: Initial feature lifting and final projection
+    Notes:
+    - Optional coordinate features (x, y) can be concatenated when
+      `config.coord_features` is True.
+    - Optional conditioning input can be concatenated channel-wise via
+      `conditioning_input_data` in `forward(...)`.
+    - All hyperparameters are drawn from `CNOConfig` (e.g., `grid_resolution`,
+      `latent_channels`, `cno_depth`, `channel_multiplier`, `n_blocks`, etc.).
 
-    Args:
-        in_channels (int): Number of input channels/features
-        out_channels (int): Number of output channels/features
-        grid_resolution (Union[int, List[int], Tuple[int]]): Input and output spatial resolution
-        cno_depth (int): Number of down/up sampling blocks in the network
-        dimension (int): Spatial dimension of the data (1, 2, or 3)
-        sequence_info (Optional[List[int]], optional): Sequence information for input/output. Defaults to [1,1,1]
-        n_blocks (int, optional): Number of residual blocks per level. Defaults to 4
-        n_blocks_bottleneck (int, optional): Number of residual blocks in the bottleneck. Defaults to 4
-        channel_multiplier (int, optional): Base channel multiplier for network width. Defaults to 16
-        norm (bool, optional): Whether to use batch normalization. Defaults to True
-        latent_channels (int, optional): Number of channels in latent space. Defaults to 64
-
-    Shape:
-        - Input: (batch_size, in_channels, *grid_resolution)
-        - Output: (batch_size, out_channels, *grid_resolution)
-
-    Example:
-        >>> model = CNO(in_channels=3, out_channels=1, grid_resolution=64, cno_depth=4, dimension=2)
-        >>> x = torch.randn(1, 3, 64, 64)
-        >>> output = model(x)
+    Shapes
+    - Input to `forward`: [batch, input_seq, in_channels, grid_x, grid_y]
+    - Output from `forward`: [batch, out_channels, grid_x, grid_y]
     """
     main_input_name = "input_data"  
     conditioning_input_name = "conditioning_input_data"
@@ -153,6 +154,25 @@ class CNO(PreTrainedModel):
     def forward(self, 
                 input_data: Tensor, 
                 **kwargs) -> Tensor: 
+        """Run the CNO model end-to-end.
+
+        Parameters
+        ----------
+        input_data : Tensor
+            Tensor of shape
+            [batch, input_seq, in_channels, grid_x, grid_y].
+        **kwargs :
+            Optional keyword arguments. Recognized:
+            - `conditioning_input_data`: Tensor of shape
+              [batch, input_seq, cond_channels, grid_x, grid_y] concatenated
+              along the channel axis before lifting.
+
+        Returns
+        -------
+        Tensor
+            Output tensor of shape
+            [batch, out_channels, grid_x, grid_y].
+        """
         
         if "conditioning_input_data" in kwargs:
             #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.

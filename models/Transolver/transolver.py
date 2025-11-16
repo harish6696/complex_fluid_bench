@@ -1,3 +1,18 @@
+"""Transolver models for physics-informed transformer architectures on 2D grids.
+
+This module provides:
+- `MLP`: a small configurable MLP used within transformer blocks.
+- `Transolver_block`: a transformer encoder block that uses physics-aware
+  attention on structured 2D meshes, plus normalization and an MLP.
+- `Transolver`: a HuggingFace-style wrapper that handles optional conditioning
+  inputs and delegates to the dimension-specific implementation.
+- `Transolver2D`: the 2D Transolver backbone that tokenizes grid fields,
+  applies a stack of transformer blocks, and reshapes outputs back to the grid.
+
+Adapted from `https://github.com/thuml/Transolver` and integrated with this
+project's configuration conventions, normalization (`CustomNorm`), and
+coordinate utilities.
+"""
 import torch
 import numpy as np
 import torch.nn as nn
@@ -11,6 +26,23 @@ from utils.grid_utils import twod_meshgrid
 from utils.model_utils import CustomNorm
 
 class MLP(nn.Module):
+    """Simple feedforward network used inside transformer blocks.
+
+    Parameters
+    ----------
+    n_input : int
+        Input feature dimension.
+    n_hidden : int
+        Hidden feature dimension.
+    n_output : int
+        Output feature dimension.
+    n_layers : int, default=1
+        Number of hidden layers (each is Linear + activation).
+    activation_fn_name : str, default='gelu'
+        Name of activation function (see `utils.activation_func`).
+    res : bool, default=True
+        Whether to add residual connections inside the hidden stack.
+    """
     def __init__(self, n_input, n_hidden, n_output, n_layers=1, activation_fn_name='gelu', res=True):
         super(MLP, self).__init__()
 
@@ -28,6 +60,7 @@ class MLP(nn.Module):
         self.linears = nn.ModuleList([nn.Sequential(nn.Linear(n_hidden, n_hidden), self.activation) for _ in range(n_layers)])
 
     def forward(self, x):
+        """Apply MLP to input tensor of shape [..., n_input] -> [..., n_output]."""
         x = self.linear_pre(x)
         for i in range(self.n_layers):
             if self.res:
@@ -38,7 +71,36 @@ class MLP(nn.Module):
         return x
 
 class Transolver_block(nn.Module):
-    """Transformer encoder block."""
+    """Transformer encoder block with physics-aware attention on 2D meshes.
+
+    Composition:
+    - CustomNorm -> Physics_Attention_Structured_Mesh_2D -> residual add
+    - CustomNorm -> MLP(hidden_dim * mlp_ratio -> hidden_dim) -> residual add
+    - Optional final projection to `out_dim` in the last layer.
+
+    Parameters
+    ----------
+    config : Any
+        Config object used by `CustomNorm` and attention.
+    num_heads : int
+        Number of attention heads.
+    hidden_dim : int
+        Token embedding dimension.
+    dropout : float
+        Dropout probability in attention.
+    activation_fn_name : str, default='gelu'
+        Activation used in the internal MLP.
+    mlp_ratio : int, default=4
+        Expansion ratio for the hidden dimension inside the MLP.
+    last_layer : bool, default=False
+        If True, adds a final linear head to output `out_dim` features.
+    out_dim : int, default=1
+        Output dimension for the final projection when `last_layer=True`.
+    slice_num : int, default=32
+        Parameter passed to physics-aware attention.
+    H, W : int
+        Grid height/width for attention tokenization.
+    """
 
     def __init__(
             self,
@@ -70,6 +132,20 @@ class Transolver_block(nn.Module):
             self.mlp2 = nn.Linear(hidden_dim, out_dim)
 
     def forward(self, fx, **kwargs):
+        """Apply attention and MLP with residual connections.
+
+        Parameters
+        ----------
+        fx : Tensor
+            Token sequence of shape [batch, num_tokens, hidden_dim].
+
+        Returns
+        -------
+        Tensor
+            Either a token sequence of the same shape (if not last layer),
+            or logits/features of shape [batch, num_tokens, out_dim] when
+            `last_layer=True`.
+        """
         fx = self.Attn(self.ln_1(fx, **kwargs)) + fx
         fx = self.mlp(self.ln_2(fx, **kwargs)) + fx
         if self.last_layer:
@@ -78,7 +154,14 @@ class Transolver_block(nn.Module):
             return fx
 
 class Transolver(PreTrainedModel):
+    """High-level Transolver wrapper.
 
+    - Build the dimension-specific backbone (`Transolver2D`) from config.
+    - Optionally concatenate `conditioning_input_data` along channel axis.
+    - Flatten input sequence and channels before delegating to the backbone.
+
+    Adapted from `https://github.com/thuml/Transolver`.
+    """
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
     config_class = TransolverConfig
@@ -92,12 +175,31 @@ class Transolver(PreTrainedModel):
         self.post_init()
 
     def build_Transolver(self):
+        """Return the dimension-specific Transolver backbone class."""
         if self.dimension == 2:
             return Transolver2D
         else:
             raise NotImplementedError("Invalid dimensionality. Only 2D ScOT implemented.")
 
     def forward(self, input_data: Tensor, **kwargs) -> Tensor:        
+        """Run the Transolver model end-to-end.
+
+        Parameters
+        ----------
+        input_data : Tensor
+            Input tensor of shape
+            [batch, input_seq, in_channels, grid_x, grid_y].
+        **kwargs :
+            Optional keyword arguments. Recognized:
+            - `conditioning_input_data`: Tensor of shape
+              [batch, input_seq, cond_channels, grid_x, grid_y] concatenated
+              channel-wise before tokenization.
+
+        Returns
+        -------
+        Tensor
+            Output tensor of shape [batch, out_channels, grid_x, grid_y].
+        """
         if "conditioning_input_data" in kwargs:
             #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
             conditioning_input_data = kwargs["conditioning_input_data"]
@@ -110,6 +212,17 @@ class Transolver(PreTrainedModel):
         return self.transolver(x, **kwargs)
 
 class Transolver2D(PreTrainedModel):
+    """2D Transolver backbone with physics-aware attention.
+
+    Key Config Fields
+    - `grid_resolution`: (H, W) grid size.
+    - `latent_channels`: hidden/token dimension.
+    - `embedding_dim`: spatial embedding dimension when `unified_pos=False`.
+    - `num_layers`, `num_heads`, `mlp_ratio`, `dropout`.
+    - `in_channels`, `out_channels`, `sequence_info`.
+    - `unified_pos`, `ref`: controls reference-grid positional encoding.
+    - `time_input`: if True, enables an extra time embedding network (`time_fc`).
+    """
     def __init__(self,
                 config,
                 #  space_dim=1,
@@ -175,9 +288,11 @@ class Transolver2D(PreTrainedModel):
         #self.placeholder = nn.Parameter((1 / (self.n_hidden)) * torch.rand(self.n_hidden, dtype=torch.float))
 
     def initialize_weights(self):
+        """Initialize module weights with truncated normal for Linear layers."""
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
+        """Weight initialization hook used by `initialize_weights`."""
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=0.02)
             if isinstance(m, nn.Linear) and m.bias is not None:
@@ -187,6 +302,19 @@ class Transolver2D(PreTrainedModel):
             nn.init.constant_(m.weight, 1.0)
 
     def get_grid(self, batchsize=1):
+        """Build reference positional encoding tensor for `unified_pos=True`.
+
+        Parameters
+        ----------
+        batchsize : int, default=1
+            Number of samples to generate positions for.
+
+        Returns
+        -------
+        Tensor
+            Position tensor of shape [batch, H, W, ref*ref] encoding distances
+            from each grid cell to points on a uniform `ref x ref` reference grid.
+        """
         size_x, size_y = self.H, self.W
         gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
         gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
@@ -205,6 +333,19 @@ class Transolver2D(PreTrainedModel):
         return pos
 
     def forward(self, fx, **kwargs):
+        """Apply the 2D Transolver to a grid tensor.
+
+        Parameters
+        ----------
+        fx : Tensor
+            Input grid tensor of shape [batch, in_channels, H, W].
+            The number of channels typically equals `in_channels * input_seq`.
+
+        Returns
+        -------
+        Tensor
+            Output grid tensor of shape [batch, out_channels, H, W].
+        """
         #if self.config.coord_features:
             #coord_feat = twod_meshgrid(list(fx.shape), fx.device)
         fx_original_input_size = fx.shape[1]

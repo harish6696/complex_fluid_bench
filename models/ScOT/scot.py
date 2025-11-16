@@ -1,4 +1,18 @@
-### Model taken from Poseidon: Efficient Foundation Models for PDEs. 
+"""ScOT (Scaled-overlapping Transformer) for grid-based operator learning.
+
+This module implements a SwinV2-style encoder-decoder with patch
+merging/unmerging and optional residual skip blocks, adapted from Poseidon:
+Efficient Foundation Models for PDEs (`https://github.com/camlab-ethz/poseidon`).
+
+Key components:
+- `ScOTEmbeddings`: patch embedding and grid partitioning
+- `ScOTEncoder`/`ScOTDecodeStage`: hierarchical transformer stages with windowed
+  attention and shifted windows
+- Patch merging/unmerging for resolution changes between stages
+- Optional residual skip blocks (`ConvNeXtBlock` or `ResNetBlock`)
+- `ScOTPatchRecovery`: recover dense grid predictions from token sequences
+"""
+### Model adapted from Poseidon: Efficient Foundation Models for PDEs. 
 # Github: https://github.com/camlab-ethz/poseidon?tab=readme-ov-file 
 # Paper: https://arxiv.org/abs/2405.19101
 
@@ -15,6 +29,7 @@ from utils.grid_utils import twod_meshgrid
 from .scot_utils import ScOTOutput, ScOTEmbeddings, ScOTPatchRecovery, ScOTPatchMerging, ScOTPatchUnmerging, ScOTLayer, ConvNeXtBlock, ResNetBlock
 from utils.model_utils import CustomNorm
 from .scot_utils import ScOTConfig
+
 class ScOTEncodeStage(nn.Module):
     def __init__(
         self,
@@ -475,9 +490,14 @@ class ScOTDecoder(nn.Module):
             reshaped_hidden_states=all_reshaped_hidden_states,
         )
 
-    
-
 class ScOT(PreTrainedModel):
+    
+    """High-level ScOT wrapper adapted from Poseidon.
+
+    - Build the dimension-specific backbone (`ScOT2D`) from config.
+    - Optionally concatenate `conditioning_input_data` along channel axis.
+    - Flatten input sequence and channels before delegating to the backbone.
+    """
 
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
@@ -498,9 +518,24 @@ class ScOT(PreTrainedModel):
         else:
             raise NotImplementedError("Invalid dimensionality. Only 2D ScOT implemented.")
 
-    
-
     def forward(self, input_data: Tensor, **kwargs) -> Tensor:        
+        """Run ScOT end-to-end.
+
+        Parameters
+        ----------
+        input_data : Tensor
+            Tensor of shape [batch, input_seq, in_channels, grid_x, grid_y].
+        **kwargs :
+            Optional keyword arguments. Recognized:
+            - `conditioning_input_data`: Tensor of shape
+              [batch, input_seq, cond_channels, grid_x, grid_y] concatenated
+              channel-wise before processing.
+
+        Returns
+        -------
+        Tensor
+            Output tensor of shape [batch, out_channels, grid_x, grid_y].
+        """
         if "conditioning_input_data" in kwargs:
             #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
             conditioning_input_data = kwargs["conditioning_input_data"]
@@ -513,8 +548,13 @@ class ScOT(PreTrainedModel):
         return self.scot(x, **kwargs)
 
 class ScOT2D(PreTrainedModel):
-    """Inspired by https://github.com/huggingface/transformers/blob/v4.35.2/src/transformers/models/swinv2/modeling_swinv2.py#L1129"""
 
+    """2D ScOT backbone with hierarchical SwinV2-style encoder-decoder.
+
+    Composes patch embeddings, multi-stage encoder/decoder with windowed
+    attention and shifted windows, residual skip blocks, and a final patch
+    recovery head to produce dense grid predictions.
+    """
     def __init__(self, config, use_mask_token=False):
         super().__init__(config)
 

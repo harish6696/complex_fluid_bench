@@ -9,11 +9,6 @@ class TransolverConfig(PretrainedConfig):
     model_type = "Transolver"
     
     def __init__(self,
-                 #dimension=2,
-                 #in_channels=1,
-                 #out_channels=1,
-                 #grid_resolution=101,
-                 #sequence_info=1,
                  latent_channels=256,
                  num_layers=5,
                  num_heads=8,
@@ -28,11 +23,6 @@ class TransolverConfig(PretrainedConfig):
                  ):
                  
         super().__init__(**kwargs)
-        #self.dimension = dimension
-        #self.in_channels = in_channels
-        #self.out_channels = out_channels
-        #self.grid_resolution = grid_resolution
-        #self.sequence_info = sequence_info
         self.latent_channels = latent_channels
         self.num_layers = num_layers
         self.num_heads = num_heads

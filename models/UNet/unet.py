@@ -1,3 +1,14 @@
+"""U-Net models for grid-based operator learning in 2D.
+
+This module provides:
+- `UNet`: a HuggingFace-style wrapper that selects the dimensionality-specific
+  implementation and handles optional conditioning inputs and reshaping.
+- `UNet2D`: a 2D U-Net with configurable depth, block counts, channel
+  multipliers, and optional coordinate features.
+
+Adapted from `https://github.com/pdearena/pdearena` and integrated with this
+project's configuration conventions and normalization utilities.
+"""
 import torch
 from torch import Tensor
 import torch.nn as nn
@@ -9,32 +20,18 @@ from utils.grid_utils import twod_meshgrid
 from utils.model_utils import CustomNorm
 
 class UNet(PreTrainedModel): 
-    """Modern U-Net architecture for fluid dynamics simulation
+    """High-level U-Net wrapper for grid-based operator learning.
 
-    A flexible U-Net implementation that supports 1D, 2D, and 3D data processing for fluid dynamics
-    simulation. The architecture includes wide-residual blocks, spatial attention blocks, and optional
-    coordinate features for spatial awareness. It processes both scalar and vector channels with
-    multi-resolution feature extraction and reconstruction.
+    Responsibilities:
+    - Resolve activation from config and construct `UNet2D` when `dimension == 2`.
+    - Optionally concatenate conditioning inputs along the channel axis.
+    - Flatten input sequence and channels before passing to the backbone.
 
-    Args:
-        in_channels (int): Number of input channels/fields
-        out_channels (int): Number of output channels/fields
-        latent_channels (int): Number of channels in the hidden layers
-        activation_fn_name (str): Name of the activation function (default: "gelu")
-        sequence_info (List[int]): Configuration for input/output sequences [input_seq_len, output_seq_len, stride]
-        dimension (int): Spatial dimension of the data (1, 2, or 3)
-        channel_multiplier (Union[Tuple[int, ...], List[int]]): Channel multipliers for each resolution level (default: (1, 2, 2, 4))
-        n_blocks (int): Number of residual blocks per resolution (default: 2)
-        norm: "group" or "layer" or "batch" or "none" (default: "layer")
-        norm_layer_eps: Used to avoid zero-div error. float (default: 1e-5)
-        use1x1 (bool): Whether to use 1x1 convolutions in initial/final layers (default: False)
+    Shapes
+    - Input to `forward`: [batch, input_seq, in_channels, grid_x, grid_y]
+    - Output from `forward`: [batch, out_channels, grid_x, grid_y]
 
-    The architecture includes:
-    - Multi-resolution processing with skip connections
-    - Optional coordinate features for spatial awareness
-    - Wide residual blocks with optional attention
-    - Configurable normalization and activation functions
-    - Flexible input/output sequence handling
+    Adapted from `https://github.com/pdearena/pdearena`.
     """
     #TODO: Do this for all models
     main_input_name = "input_data"
@@ -54,6 +51,7 @@ class UNet(PreTrainedModel):
         self.unet = self.build_UNet()(config=config, activation=activation)
        
     def build_UNet(self):
+        """Return the dimension-specific UNet backbone class."""
         if self.config.dimension == 2:
             return UNet2D
         else:
@@ -62,6 +60,24 @@ class UNet(PreTrainedModel):
     
     ### Main Forward function ###
     def forward(self, input_data: Tensor, **kwargs) -> Tensor:
+        """Run the U-Net model end-to-end.
+
+        Parameters
+        ----------
+        input_data : Tensor
+            Input tensor of shape
+            [batch, input_seq, in_channels, grid_x, grid_y].
+        **kwargs :
+            Optional keyword arguments. Recognized:
+            - `conditioning_input_data`: Tensor of shape
+              [batch, input_seq, cond_channels, grid_x, grid_y] concatenated
+              along the channel axis before processing.
+
+        Returns
+        -------
+        Tensor
+            Output tensor of shape [batch, out_channels, grid_x, grid_y].
+        """
         
         if "conditioning_input_data" in kwargs:
             #NOTE: Conditioning data can be passed into a conv network before concatination with input_data.
@@ -76,7 +92,20 @@ class UNet(PreTrainedModel):
 
 #Unet based on the dimension
 class UNet2D(PreTrainedModel):
-    """2D U-Net"""
+    """2D U-Net backbone.
+
+    Architecture:
+    - Initial projection (`image_proj`) to latent channels with either 1x1 or 3x3 conv.
+    - Down path: repeated `DownBlockND` blocks with optional `DownsampleND` between resolutions.
+    - Middle bottleneck: `MiddleBlockND`.
+    - Up path: repeated `UpBlockND` blocks with skip concatenations and `UpsampleND` between resolutions.
+    - Final norm, activation, and output projection to `out_size` channels.
+
+    Notes:
+    - If needed, inputs are padded so H and W are divisible by the overall downsampling factor.
+      Outputs are cropped back to original size.
+    - Optional coordinate features (x, y) can be concatenated when `config.coord_features` is True.
+    """
     def __init__(self, config, activation: nn.Module):
         super().__init__(config)
 
@@ -168,6 +197,20 @@ class UNet2D(PreTrainedModel):
         self._ds_factor = 2 ** (unet_depth - 1)
 
     def forward(self, x: torch.Tensor, **kwargs):
+        """Encode and decode a 2D grid with skip connections.
+
+        Parameters
+        ----------
+        x : Tensor
+            Input grid tensor of shape [batch, in_channels, grid_x, grid_y].
+            The number of channels typically equals `in_size * input_seq`
+            plus 2 if `coord_features=True`.
+
+        Returns
+        -------
+        Tensor
+            Output grid tensor of shape [batch, out_channels, grid_x, grid_y].
+        """
         if x.dim() != 4:
             raise ValueError(
                 "Only 4D tensors [batch, in_channels, grid_x, grid_y] accepted for 2D UNet"

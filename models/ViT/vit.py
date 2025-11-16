@@ -1,3 +1,16 @@
+"""Vision Transformer (ViT) models for 2D grid operator learning.
+
+This module provides:
+- `ViTModel`: backbone adapted from Hugging Face ViT with project-specific
+  normalization and config integration.
+- `ViT`: a high-level wrapper handling optional conditioning inputs, sequence
+  flattening, and optional coordinate features before delegating to ViT2D.
+- `ViT2D`: a ViT-based encoder with a lightweight decoder (1x1 conv + PixelShuffle)
+  to reconstruct dense grid predictions.
+
+Adapted from Hugging Face ViT and integrated with this project's configuration
+conventions and utilities.
+"""
 from typing import Optional, Tuple, Union
 from transformers import PreTrainedModel
 from transformers.modeling_outputs import BaseModelOutput
@@ -13,6 +26,18 @@ from utils.grid_utils import twod_meshgrid
 
 
 class ViTModel(ViTPreTrainedModel):
+
+    """ViT backbone.
+
+    Components:
+    - Patch embeddings with optional mask token
+    - Transformer encoder
+    - Final normalization using `CustomNorm`
+
+    Adapted from:
+    `https://huggingface.co/docs/transformers/v4.57.1/en/model_doc/vit#transformers.ViTForMaskedImageModeling`.
+    """
+    
     def __init__(self, config: ViTConfig, use_mask_token: bool = False):
         super().__init__(config)
         self.config = config
@@ -90,6 +115,15 @@ class ViTModel(ViTPreTrainedModel):
 
 class ViT(PreTrainedModel):
 
+    """High-level ViT wrapper for grid-to-grid prediction.
+
+    Responsibilities:
+    - Validate 2D inputs and patch-size divisibility.
+    - Optionally concatenate `conditioning_input_data` channel-wise.
+    - Flatten input sequence and channels.
+    - Optionally append coordinate features.
+    - Delegate to `ViT2D` for encoding and decoding.
+    """
     main_input_name = "input_data"
     conditioning_input_name = "conditioning_input_data"
     
@@ -113,6 +147,23 @@ class ViT(PreTrainedModel):
         
 
     def forward(self, input_data: Tensor, **kwargs) -> Tensor:
+        """Run the ViT model end-to-end.
+
+        Parameters
+        ----------
+        input_data : Tensor
+            Tensor of shape [batch, input_seq, in_channels, grid_x, grid_y].
+        **kwargs :
+            Optional keyword arguments. Recognized:
+            - `conditioning_input_data`: Tensor of shape
+              [batch, input_seq, cond_channels, grid_x, grid_y] concatenated
+              channel-wise before embedding.
+
+        Returns
+        -------
+        Tensor
+            Output tensor of shape [batch, out_channels, grid_x, grid_y].
+        """
 
         if input_data is None:
             raise ValueError("input_data cannot be None")
@@ -162,6 +213,20 @@ class ViT2D(ViTModel):
         input_data: Optional[torch.Tensor] = None,
         **kwargs
     ) -> Tensor:
+        """Encode with ViT and reconstruct dense grid outputs.
+
+        Parameters
+        ----------
+        input_data : Tensor
+            Input grid tensor of shape [batch, in_channels, grid_x, grid_y].
+            The number of channels typically equals `in_channels * input_seq`
+            plus 2 if coordinate features were appended earlier.
+
+        Returns
+        -------
+        Tensor
+            Output grid tensor of shape [batch, out_channels, grid_x, grid_y].
+        """
 
         # ToDo: add head_mask in case necessary
         bool_masked_pos = None

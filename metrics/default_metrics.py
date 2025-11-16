@@ -148,6 +148,44 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
     difference = grouped_preds - grouped_targets  # (B, R, T_out, C, *spatial)
     flat_difference = preds_arr - targets_arr      # (B, R*T_out, C, *spatial)
 
+    ############################################################
+    #specific for rho
+    preds_rho = preds_arr[:, :, 0:1, :, :]
+    targets_rho = targets_arr[:, :, 0:1, :, :]
+    
+    grouped_preds_rho = grouped_preds[:, :, :, 0:1, :, :]
+    grouped_targets_rho = grouped_targets[:, :, :, 0:1, :, :]
+
+    difference_rho = grouped_preds_rho - grouped_targets_rho
+    flat_difference_rho = preds_rho - targets_rho
+
+    ############################################################
+    #specific for grad_rho
+    preds_grad_rho_x = np.gradient(preds_rho, axis=3)
+    preds_grad_rho_y = np.gradient(preds_rho, axis=4)
+    preds_rho_grad = np.sqrt(preds_grad_rho_x**2 + preds_grad_rho_y**2)
+
+    grouped_preds_grad_rho_x = np.gradient(grouped_preds_rho, axis=4)
+    grouped_preds_grad_rho_y = np.gradient(grouped_preds_rho, axis=5)
+    grouped_preds_grad_rho = np.sqrt(grouped_preds_grad_rho_x**2 + grouped_preds_grad_rho_y**2)
+
+    targets_rho_grad_x = np.gradient(targets_rho, axis=3)
+    targets_rho_grad_y = np.gradient(targets_rho, axis=4)
+    targets_rho_grad = np.sqrt(targets_rho_grad_x**2 + targets_rho_grad_y**2)
+
+    grouped_targets_grad_rho_x = np.gradient(grouped_targets_rho, axis=4)
+    grouped_targets_grad_rho_y = np.gradient(grouped_targets_rho, axis=5)
+    grouped_targets_grad_rho = np.sqrt(grouped_targets_grad_rho_x**2 + grouped_targets_grad_rho_y**2)
+
+    difference_grad_rho = grouped_preds_grad_rho - grouped_targets_grad_rho
+    flat_difference_grad_rho = preds_rho_grad - targets_rho_grad
+    ############################################################
+    # Map logical difference pairs so metrics can choose which to use
+    diff_pairs = {
+        "default": (difference, flat_difference),
+        "rho": (difference_rho, flat_difference_rho),
+        "grad_rho": (difference_grad_rho, flat_difference_grad_rho),
+    }
     # Internal metric implementation
     def _mae(values):
         return np.abs(values)
@@ -156,8 +194,13 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
         return values ** 2
 
     _METRIC_IMPL = {
-        "l1": ("l1_error", _mae, False),  # (public name, elementwise_transform, use_rmse)
-        "l2": ("l2_error", _mse, True),   # compute RMSE (sqrt(mean of squared error))
+        # (public name, elementwise_transform, use_rmse, diff_pair_key)
+        "l1": ("l1_error", _mae, False, "default"),
+        "l2": ("l2_error", _mse, True, "default"),
+        "l1_rho":("l1_rho_error", _mae, False, "rho"),
+        "l2_rho":("l2_rho_error", _mse, True, "rho"),
+        "l1_grad_rho": ("l1_grad_rho_error", _mae, False, "grad_rho"),
+        "l2_grad_rho": ("l2_grad_rho_error", _mse, True, "grad_rho"),
     }
 
     metric_name_to_values = {}
@@ -181,9 +224,10 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
             raise ValueError(
                 f"Unknown metric '{metric_key}'. Available: {sorted(_METRIC_IMPL)}"
             )
-        metric_key_name, elementwise_transform, use_rmse = _METRIC_IMPL[metric_key]
+        metric_key_name, elementwise_transform, use_rmse, diff_pair_key = _METRIC_IMPL[metric_key]
+        grouped_diff, flat_diff = diff_pairs[diff_pair_key]
 
-        elementwise_error = elementwise_transform(difference)  # (B, R, T_out, C, *spatial)
+        elementwise_error = elementwise_transform(grouped_diff)  # (B, R, T_out, C, *spatial)
 
         # ------------------------------
         # Per-channel per-sample metric
@@ -260,7 +304,7 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
         # Here the output_sequence_length is always 1, only the stride shows the jump between timesteps
         # ------------------------------------------------------------------
         if include_per_timestep:
-            elem_err_flat = elementwise_transform(flat_difference)  # (B, T_flat, C, *spatial)
+            elem_err_flat = elementwise_transform(flat_diff)  # (B, T_flat, C, *spatial)
 
             # Spatial axes start at dim=3 for flattened arrays
             spatial_axes_start_flat = 3
