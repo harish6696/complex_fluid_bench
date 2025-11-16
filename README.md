@@ -1,6 +1,6 @@
 # Complex Fluid Bench
 A repository to benchmark two complex flow datasets: Laser Induced Droplet Explosion (LIDE) and Shock Induced Droplet Aerobreakup (SIDA) on different ML models. 
-https://openreview.net/forum?id=GXAsUKNyqN
+- [Complex Fluid ML Benchmarking Paper](https://openreview.net/forum?id=GXAsUKNyqN)
 
 [![intro-image-(1).png](https://i.postimg.cc/PqgqqqKv/intro-image-(1).png)](https://postimg.cc/qtGrb4Pp)
 
