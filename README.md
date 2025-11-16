@@ -16,6 +16,12 @@ After installation:
 conda activate complex_fluid_bench
 ```
 
+## Datasets
+
+Datasets used in the paper are provided on the 🤗 Hub: 
+- [🤗 Hub – LIDE Dataset](https://huggingface.co/datasets/FluidVerse/LIDE)
+- [🤗 Hub – SIDA Dataset](https://huggingface.co/datasets/FluidVerse/SIDA)
+
 ## Training
 
 Train uses Hydra. The default run loads configs from `config/defaults.yaml` (FNO-1M on Aerobreakup) and starts training:
@@ -105,3 +111,15 @@ Inference always begins from the initial time step (set infer_from_ic=True and i
 ```bash
 python only_inference.py --config-name=only_inference.yaml
 ```
+
+## Licensing
+This benchmarking code is released under the Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0) and is exclusively for non-commercial research and educational purposes.
+
+## Citation
+If you use our models, code, or datasets, please consider citing our paper:
+
+```bibtex
+@misc{complex_fluid_bench,
+      title={Laser- and Shock-induced Droplet Dynamics:
+A Machine Learning Benchmark for Complex Multiphase Flows},
+
