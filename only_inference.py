@@ -465,7 +465,6 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                                                 data_normalization_stats=data_config["data_normalization_stats"],
                                                 data_normalization_strategy=data_config["data_normalization_strategy"],
                                                 is_steady_state_prediction=data_config["is_steady_state_prediction"],
-                                                residual_config=data_config["residual_config"],
                                                 n_infer_rollouts=infer_config["n_infer_rollouts"],
                                                 infer_from_random_timestep=infer_config["infer_from_random_timestep"],
                                                 infer_from_ic=infer_config["infer_from_ic"],
