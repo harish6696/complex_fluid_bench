@@ -1,4 +1,5 @@
 import numpy as np
+from utils.compute_stats import re_normalize_data
 
 def l1_error(preds, targets):
     """
@@ -36,7 +37,6 @@ def l1_error(preds, targets):
     l1_error = np.mean(np.abs(diff))
     return l1_error
 
-
 def l2_error(preds, targets):
     """
     Compute the L2 error (Root Mean Squared Error) between predictions and targets.
@@ -72,41 +72,94 @@ def l2_error(preds, targets):
     l2_error = np.mean((diff) ** 2) ** 0.5
     return l2_error
 
-
-def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metrics=("l1", "l2"), include_per_timestep: bool = False):
-    """Compute specified error metrics per rollout step.
+def center_of_mass_from_density(rho: np.ndarray) -> np.ndarray:
+    """
+    Compute 1D center of mass along x from a 2D density field.
 
     Parameters
     ----------
-    preds, targets : np.ndarray
-        Either:
-        - Flattened arrays of identical shapes ``(B, R*T_out, C, *spatial)`` with
-          ``outputs_per_rollout=T_out``, or
-        - Grouped arrays of identical shapes ``(B, R, T_out, C, *spatial)``.
-    outputs_per_rollout : int, optional
-        Number of outputs produced per rollout step (``T_out``). Defaults to 1.
-        Used to regroup flattened inputs so that metrics are computed per rollout step (R),
-        aggregating across the ``T_out`` outputs of that step.
-    include_per_timestep : bool, optional
-        When True, also compute per-timestep metrics using the flattened arrays
-        of shape ``(B, R*T_out, C, *spatial)``: returns per-timestep mean/std for
-        per-channel and overall, stacked as ``(R*T_out, C+1)`` under keys
-        ``per_timestep_mean`` and ``per_timestep_std`` for each metric.
-    metrics : tuple | list
-        Iterable of metric identifiers to compute. Supported strings:
-        - "l1": mean absolute error (MAE)
-        - "l2": root-mean-squared error (RMSE)
-        Custom metrics can be added by extending the `_METRIC_IMPL` dict.
+    rho : np.ndarray
+        Array of shape (B, T, 1, H, W) containing density values.
 
     Returns
     -------
-    dict[str, dict[str, np.ndarray]]
-        For each metric name, returns a dictionary with keys:
-        - "per_step_mean":   array of shape ``(R, C+1)`` (per-channel and overall)
-        - "per_step_std":    array of shape ``(R, C+1)`` (per-channel and overall)
-        - "cumulative_mean": array of shape ``(R, C+1)`` cumulative over rollout steps
-        - "cumulative_std":  array of shape ``(R, C+1)`` cumulative over rollout steps
+    np.ndarray
+        Array of shape (B, T, 1) with x center of mass coordinates
+        normalized to [0, 1].
     """
+    if not isinstance(rho, np.ndarray):
+        rho = np.asarray(rho)
+    if rho.ndim != 5 or rho.shape[2] != 1:
+        raise ValueError(f"rho must have shape (B, T, 1, H, W). Got {rho.shape}.")
+
+    _, _, _, H, W = rho.shape
+    # Coordinates in [0, 1]
+    xs = np.linspace(0.0, 1.0, W, dtype=rho.dtype)
+    X = np.broadcast_to(xs[None, None, None, None, :], (1, 1, 1, H, W))  # (1,1,1,H,W)
+
+    eps = np.array(1e-12, dtype=rho.dtype)
+    total_rho = np.sum(rho, axis=(3, 4)) + eps  # (B, T, 1)
+    com_x = np.sum(rho * X, axis=(3, 4)) / total_rho  # (B, T, 1)
+    return com_x  # (B, T, 1)
+
+def _grouped_center_of_mass_from_density(rho_grouped: np.ndarray) -> np.ndarray:
+    # rho_grouped: (B, R, T_out, 1, H, W) -> returns (B, R, T_out, 1) for x
+    if rho_grouped.ndim != 6 or rho_grouped.shape[3] != 1:
+        raise ValueError(f"Expected grouped rho of shape (B, R, T, 1, H, W). Got {rho_grouped.shape}.")
+    _, _, _, _, H, W = rho_grouped.shape
+    xs = np.linspace(0.0, 1.0, W, dtype=rho_grouped.dtype)
+    X = np.broadcast_to(xs[None, None, None, None, None, :], (1, 1, 1, 1, H, W))  # (1,1,1,1,H,W)
+    # Densities are already non-negative; compute COM directly
+    mass = rho_grouped
+    eps = np.array(1e-12, dtype=rho_grouped.dtype)
+    total_mass = np.sum(mass, axis=(4, 5))  # (B, R, T_out, 1)
+    com_x_num = np.sum(mass * X, axis=(4, 5))  # (B, R, T_out, 1)
+    com_x = com_x_num / (total_mass + eps)  # (B, R, T_out, 1)
+    return com_x  # (B, R, T_out, 1)
+
+
+def idx_finder(x):
+    mask = x > 0           # shape [B, T, C, X], boolean
+
+    # Shift mask right by one to compare with previous element
+    prev = np.concatenate(
+            [np.zeros_like(mask[..., :1], dtype=bool),  ~mask[..., :-1]],
+            axis=-1
+        )
+
+    # block_starts[b,t,c,i] = True when a new positive block begins at index i
+    block_starts = mask & prev   # shape [B, T, C, X]
+
+        # Now find the *last* block start index along axis -1
+        # If no positive block exists, last occurrence = -1
+    idx_last = block_starts.shape[-1] - 1 - np.argmax(
+            block_starts[..., ::-1], axis=-1
+        )
+
+        # For slices with no positive values, block_starts is all False,
+        # argmax returns 0 → idx_last = X-1, which is wrong.
+        # Fix this by masking out cases where there was no block.
+    has_block = block_starts.any(axis=-1)  # shape [B,T,C]
+    idx_last = np.where(has_block, idx_last, -1)  # -1 = "no block found"
+
+    return idx_last  # shape [B,T,C]
+
+
+def compute_metrics_for_n_rollouts(
+    preds,
+    targets,
+    outputs_per_rollout=1,
+    metrics=("l1", "l2"),
+    include_per_timestep: bool = False,
+    norm_stats: dict = None,
+    norm_strategy: str = None,
+    out_channel_names: list = None,
+    denormalize_for_physics: bool = True,
+    dataset_name: str = None,
+    grid_resolution: int = None,
+    channel_names: list = None,
+):
+
 
     if isinstance(preds, np.ndarray):
         preds_arr = preds
@@ -142,49 +195,215 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
         preds_arr.shape[2],
         *preds_arr.shape[3:],
     )
+
     grouped_preds = preds_arr.reshape(grouped_shape)
     grouped_targets = targets_arr.reshape(grouped_shape)
 
     difference = grouped_preds - grouped_targets  # (B, R, T_out, C, *spatial)
     flat_difference = preds_arr - targets_arr      # (B, R*T_out, C, *spatial)
-
-    ############################################################
-    #specific for rho
-    preds_rho = preds_arr[:, :, 0:1, :, :]
-    targets_rho = targets_arr[:, :, 0:1, :, :]
     
-    grouped_preds_rho = grouped_preds[:, :, :, 0:1, :, :]
-    grouped_targets_rho = grouped_targets[:, :, :, 0:1, :, :]
+    if "Density" in channel_names:
+        ############################################################
+        #specific for rho
+        preds_rho = preds_arr[:, :, 0:1, :, :]
+        targets_rho = targets_arr[:, :, 0:1, :, :]
+        
+        grouped_preds_rho = grouped_preds[:, :, :, 0:1, :, :]
+        grouped_targets_rho = grouped_targets[:, :, :, 0:1, :, :]
+        # Optionally re-normalize rho for physics-based metrics (COM, gradients)
+        if (
+            denormalize_for_physics
+            and norm_stats is not None
+            and norm_strategy is not None
+            and out_channel_names is not None
+            and len(out_channel_names) > 0
+        ):
+            preds_rho = re_normalize_data(preds_rho, norm_stats["Density"], norm_strategy)
+            preds_rho[preds_rho < 0] = 0
+            targets_rho = re_normalize_data(targets_rho, norm_stats["Density"], norm_strategy)
 
-    difference_rho = grouped_preds_rho - grouped_targets_rho
-    flat_difference_rho = preds_rho - targets_rho
+            grouped_preds_rho = re_normalize_data(grouped_preds_rho, norm_stats["Density"], norm_strategy)
+            grouped_preds_rho[grouped_preds_rho < 0] = 0
+            grouped_targets_rho = re_normalize_data(grouped_targets_rho, norm_stats["Density"], norm_strategy)
 
-    ############################################################
-    #specific for grad_rho
-    preds_grad_rho_x = np.gradient(preds_rho, axis=3)
-    preds_grad_rho_y = np.gradient(preds_rho, axis=4)
-    preds_rho_grad = np.sqrt(preds_grad_rho_x**2 + preds_grad_rho_y**2)
+        difference_rho = grouped_preds_rho - grouped_targets_rho
+        flat_difference_rho = preds_rho - targets_rho
 
-    grouped_preds_grad_rho_x = np.gradient(grouped_preds_rho, axis=4)
-    grouped_preds_grad_rho_y = np.gradient(grouped_preds_rho, axis=5)
-    grouped_preds_grad_rho = np.sqrt(grouped_preds_grad_rho_x**2 + grouped_preds_grad_rho_y**2)
+        ############################################################
+        #specific for grad_rho
+        preds_grad_rho_x = np.gradient(preds_rho, axis=3)
+        preds_grad_rho_y = np.gradient(preds_rho, axis=4)
+        preds_rho_grad = np.sqrt(preds_grad_rho_x**2 + preds_grad_rho_y**2)
 
-    targets_rho_grad_x = np.gradient(targets_rho, axis=3)
-    targets_rho_grad_y = np.gradient(targets_rho, axis=4)
-    targets_rho_grad = np.sqrt(targets_rho_grad_x**2 + targets_rho_grad_y**2)
+        grouped_preds_grad_rho_x = np.gradient(grouped_preds_rho, axis=4)
+        grouped_preds_grad_rho_y = np.gradient(grouped_preds_rho, axis=5)
+        grouped_preds_grad_rho = np.sqrt(grouped_preds_grad_rho_x**2 + grouped_preds_grad_rho_y**2)
 
-    grouped_targets_grad_rho_x = np.gradient(grouped_targets_rho, axis=4)
-    grouped_targets_grad_rho_y = np.gradient(grouped_targets_rho, axis=5)
-    grouped_targets_grad_rho = np.sqrt(grouped_targets_grad_rho_x**2 + grouped_targets_grad_rho_y**2)
+        targets_rho_grad_x = np.gradient(targets_rho, axis=3)
+        targets_rho_grad_y = np.gradient(targets_rho, axis=4)
+        targets_rho_grad = np.sqrt(targets_rho_grad_x**2 + targets_rho_grad_y**2)
 
-    difference_grad_rho = grouped_preds_grad_rho - grouped_targets_grad_rho
-    flat_difference_grad_rho = preds_rho_grad - targets_rho_grad
+        grouped_targets_grad_rho_x = np.gradient(grouped_targets_rho, axis=4)
+        grouped_targets_grad_rho_y = np.gradient(grouped_targets_rho, axis=5)
+        grouped_targets_grad_rho = np.sqrt(grouped_targets_grad_rho_x**2 + grouped_targets_grad_rho_y**2)
+
+        difference_grad_rho = grouped_preds_grad_rho - grouped_targets_grad_rho
+        flat_difference_grad_rho = preds_rho_grad - targets_rho_grad
+        ############################################################
+
+        ############################################################
+        # Droplet X-Center of mass metrics from rho
+        ############################################################
+        if dataset_name == "Aerobreakup":
+            grouped_com_preds = _grouped_center_of_mass_from_density(grouped_preds_rho)
+            grouped_com_preds = grouped_com_preds[:, :, :, :, None, None]
+            grouped_com_targets = _grouped_center_of_mass_from_density(grouped_targets_rho)
+            grouped_com_targets = grouped_com_targets[:, :, :, :, None, None]
+            difference_com = grouped_com_preds - grouped_com_targets  # (B, R, T_out, 1, 1, 1)
+
+            flat_com_preds = center_of_mass_from_density(preds_rho)  # (B, T_flat, 1)
+            flat_com_targets = center_of_mass_from_density(targets_rho)  # (B, T_flat, 1)
+            flat_com_preds = flat_com_preds[:, :, :, None, None]
+            flat_com_targets = flat_com_targets[:, :, :, None, None]
+            flat_difference_com = flat_com_preds - flat_com_targets  # (B, T_flat, 1, 1, 1)
+        ############################################################
+
+        ############################################################
+        # Droplet-Outer radius from rho
+        ############################################################
+        if dataset_name == "LaserDroplet":
+            preds_axis = preds_rho[..., 0] #extract the first column of the rho field
+            preds_axis_diff = preds_axis[..., :1] - preds_axis[..., :-1]
+            preds_rad_idx = idx_finder(preds_axis_diff)/grid_resolution[0] # [B, Rollout, C]
+            preds_rad_idx = preds_rad_idx[:, :, :, None, None]
+
+            grouped_preds_axis = grouped_preds_rho[..., 0]
+            grouped_preds_axis_diff = grouped_preds_axis[..., :1] - grouped_preds_axis[..., :-1]
+            grouped_preds_rad_idx = idx_finder(grouped_preds_axis_diff)/grid_resolution[0] # [grouped, B, Rollout, C]
+            grouped_preds_rad_idx = grouped_preds_rad_idx[:, :, :, :, None, None]
+    
+            targets_axis = targets_rho[..., 0]
+            targets_axis_diff = targets_axis[..., :1] - targets_axis[..., :-1]
+            targets_rad_idx = idx_finder(targets_axis_diff)/grid_resolution[0] # [B, Rollout, C]
+            targets_rad_idx = targets_rad_idx[:, :, :, None, None]
+
+            grouped_targets_axis = grouped_targets_rho[..., 0]
+            grouped_targets_axis_diff = grouped_targets_axis[..., :1] - grouped_targets_axis[..., :-1]
+            grouped_targets_rad_idx = idx_finder(grouped_targets_axis_diff)/grid_resolution[0] # [Grouped, B, Rollout, C]
+            grouped_targets_rad_idx = grouped_targets_rad_idx[:, :, :, :, None, None]
+
+            difference_outer_radius = grouped_preds_rad_idx - grouped_targets_rad_idx
+            flat_difference_outer_radius = preds_rad_idx - targets_rad_idx
+    
+    #Kinetic Energy using U,V and density
+    if "Velocity_X" in channel_names and "Velocity_Y" in channel_names and "Density" in channel_names:
+        preds_vel_x = preds_arr[:, :, 2:3, :, :]
+        preds_vel_y = preds_arr[:, :, 3:4, :, :]
+        targets_vel_x = targets_arr[:, :, 2:3, :, :]
+        targets_vel_y = targets_arr[:, :, 3:4, :, :]
+
+        grouped_preds_vel_x = grouped_preds[:, :, :, 2:3, :, :]
+        grouped_preds_vel_y = grouped_preds[:, :, :, 3:4, :, :]
+        grouped_targets_vel_x = grouped_targets[:, :, :, 2:3, :, :]
+        grouped_targets_vel_y = grouped_targets[:, :, :, 3:4, :, :]
+
+        if (
+            denormalize_for_physics
+            and norm_stats is not None
+            and norm_strategy is not None
+            and out_channel_names is not None
+            and len(out_channel_names) > 0
+        ):
+            preds_vel_x = re_normalize_data(preds_vel_x, norm_stats["Velocity_X"], norm_strategy)
+            preds_vel_y = re_normalize_data(preds_vel_y, norm_stats["Velocity_Y"], norm_strategy)
+            targets_vel_x = re_normalize_data(targets_vel_x, norm_stats["Velocity_X"], norm_strategy)
+            targets_vel_y = re_normalize_data(targets_vel_y, norm_stats["Velocity_Y"], norm_strategy)
+
+            grouped_preds_vel_x = re_normalize_data(grouped_preds_vel_x, norm_stats["Velocity_X"], norm_strategy)
+            grouped_preds_vel_y = re_normalize_data(grouped_preds_vel_y, norm_stats["Velocity_Y"], norm_strategy)
+            grouped_targets_vel_x = re_normalize_data(grouped_targets_vel_x, norm_stats["Velocity_X"], norm_strategy)
+            grouped_targets_vel_y = re_normalize_data(grouped_targets_vel_y, norm_stats["Velocity_Y"], norm_strategy)
+
+        preds_KE = (0.5 * ( preds_vel_x**2 + preds_vel_y**2 ) * preds_rho ).sum(axis=(3,4))
+        preds_KE = preds_KE[:, :, :, None, None]
+        targets_KE = (0.5 * ( targets_vel_x**2 + targets_vel_y**2 ) * targets_rho ).sum(axis=(3,4))
+        targets_KE = targets_KE[:, :, :, None, None]
+        
+        grouped_preds_KE = (0.5 * ( grouped_preds_vel_x**2 + grouped_preds_vel_y**2 ) * grouped_preds_rho ).sum(axis=(4,5))
+        grouped_preds_KE = grouped_preds_KE[:, :, :, :, None, None]
+        grouped_targets_KE = (0.5 * ( grouped_targets_vel_x**2 + grouped_targets_vel_y**2 ) * grouped_targets_rho ).sum(axis=(4,5))
+        grouped_targets_KE = grouped_targets_KE[:, :, :, :, None, None]
+
+        difference_KE = grouped_preds_KE - grouped_targets_KE
+        flat_difference_KE = preds_KE - targets_KE
+    
+    #Vorticity production using U,V
+    if "Velocity_X" in channel_names and "Velocity_Y" in channel_names:
+        preds_vel_x = preds_arr[:, :, 2:3, :, :]
+        preds_vel_y = preds_arr[:, :, 3:4, :, :]
+        targets_vel_x = targets_arr[:, :, 2:3, :, :]
+        targets_vel_y = targets_arr[:, :, 3:4, :, :]
+
+        grouped_preds_vel_x = grouped_preds[:, :, :, 2:3, :, :]
+        grouped_preds_vel_y = grouped_preds[:, :, :, 3:4, :, :]
+        grouped_targets_vel_x = grouped_targets[:, :, :, 2:3, :, :]
+        grouped_targets_vel_y = grouped_targets[:, :, :, 3:4, :, :]
+
+        if (
+            denormalize_for_physics
+            and norm_stats is not None
+            and norm_strategy is not None
+            and out_channel_names is not None
+            and len(out_channel_names) > 0
+        ):
+            preds_vel_x = re_normalize_data(preds_vel_x, norm_stats["Velocity_X"], norm_strategy)
+            preds_vel_y = re_normalize_data(preds_vel_y, norm_stats["Velocity_Y"], norm_strategy)
+            targets_vel_x = re_normalize_data(targets_vel_x, norm_stats["Velocity_X"], norm_strategy)
+            targets_vel_y = re_normalize_data(targets_vel_y, norm_stats["Velocity_Y"], norm_strategy)
+
+            grouped_preds_vel_x = re_normalize_data(grouped_preds_vel_x, norm_stats["Velocity_X"], norm_strategy)
+            grouped_preds_vel_y = re_normalize_data(grouped_preds_vel_y, norm_stats["Velocity_Y"], norm_strategy)
+            grouped_targets_vel_x = re_normalize_data(grouped_targets_vel_x, norm_stats["Velocity_X"], norm_strategy)
+            grouped_targets_vel_y = re_normalize_data(grouped_targets_vel_y, norm_stats["Velocity_Y"], norm_strategy)
+
+        dpreds_u_dy, dpreds_u_dx = np.gradient(preds_vel_x, axis=(-2, -1))
+        dpreds_v_dy, dpreds_v_dx = np.gradient(preds_vel_y, axis=(-2, -1))
+        preds_omega = dpreds_v_dx - dpreds_u_dy
+        preds_VP = (preds_omega * preds_omega).mean(axis=(3,4))
+        preds_VP = preds_VP[:, :, :, None, None]
+
+        dtargets_u_dy, dtargets_u_dx = np.gradient(targets_vel_x, axis=(-2, -1))
+        dtargets_v_dy, dtargets_v_dx = np.gradient(targets_vel_y, axis=(-2, -1))
+        targets_omega = dtargets_v_dx - dtargets_u_dy
+        targets_VP = (targets_omega * targets_omega).mean(axis=(3,4))
+        targets_VP = targets_VP[:, :, :, None, None]
+
+        # Grouped vorticity production (VP)
+        grouped_dpreds_u_dy, grouped_dpreds_u_dx = np.gradient(grouped_preds_vel_x, axis=(4, 5))
+        grouped_dpreds_v_dy, grouped_dpreds_v_dx = np.gradient(grouped_preds_vel_y, axis=(4, 5))
+        grouped_preds_omega = grouped_dpreds_v_dx - grouped_dpreds_u_dy
+        grouped_preds_VP = (grouped_preds_omega * grouped_preds_omega).mean(axis=(4, 5))
+        grouped_preds_VP = grouped_preds_VP[:, :, :, :, None, None]
+
+        grouped_dtargets_u_dy, grouped_dtargets_u_dx = np.gradient(grouped_targets_vel_x, axis=(4, 5))
+        grouped_dtargets_v_dy, grouped_dtargets_v_dx = np.gradient(grouped_targets_vel_y, axis=(4, 5))
+        grouped_targets_omega = grouped_dtargets_v_dx - grouped_dtargets_u_dy
+        grouped_targets_VP = (grouped_targets_omega * grouped_targets_omega).mean(axis=(4, 5))
+        grouped_targets_VP = grouped_targets_VP[:, :, :, :, None, None]
+
+        difference_VP = grouped_preds_VP - grouped_targets_VP
+        flat_difference_VP = preds_VP - targets_VP
+
     ############################################################
     # Map logical difference pairs so metrics can choose which to use
     diff_pairs = {
         "default": (difference, flat_difference),
-        "rho": (difference_rho, flat_difference_rho),
-        "grad_rho": (difference_grad_rho, flat_difference_grad_rho),
+        "rho": (difference_rho, flat_difference_rho) if "Density" in channel_names else None,
+        "grad_rho": (difference_grad_rho, flat_difference_grad_rho) if "Density" in channel_names else None,
+        "x_com": (difference_com, flat_difference_com) if dataset_name == "Aerobreakup" and "Density" in channel_names else None,
+        "outer_radius": (difference_outer_radius, flat_difference_outer_radius) if dataset_name == "LaserDroplet" and "Density" in channel_names else None,
+        "KE": (difference_KE, flat_difference_KE) if "Velocity_X" in channel_names and "Velocity_Y" in channel_names and "Density" in channel_names else None,
+        "VP": (difference_VP, flat_difference_VP) if "Velocity_X" in channel_names and "Velocity_Y" in channel_names else None,
     }
     # Internal metric implementation
     def _mae(values):
@@ -193,15 +412,43 @@ def compute_metrics_for_n_rollouts(preds, targets, outputs_per_rollout=1, metric
     def _mse(values):
         return values ** 2
 
+    # Build metric dictionary conditionally based on available channels/dataset
     _METRIC_IMPL = {
-        # (public name, elementwise_transform, use_rmse, diff_pair_key)
         "l1": ("l1_error", _mae, False, "default"),
         "l2": ("l2_error", _mse, True, "default"),
-        "l1_rho":("l1_rho_error", _mae, False, "rho"),
-        "l2_rho":("l2_rho_error", _mse, True, "rho"),
-        "l1_grad_rho": ("l1_grad_rho_error", _mae, False, "grad_rho"),
-        "l2_grad_rho": ("l2_grad_rho_error", _mse, True, "grad_rho"),
     }
+
+    if "Density" in channel_names:
+        _METRIC_IMPL.update({
+            "l1_rho": ("l1_rho_error", _mae, False, "rho"),
+            "l2_rho": ("l2_rho_error", _mse, True, "rho"),
+            "l1_grad_rho": ("l1_grad_rho_error", _mae, False, "grad_rho"),
+            "l2_grad_rho": ("l2_grad_rho_error", _mse, True, "grad_rho"),
+        })
+        if dataset_name == "Aerobreakup":
+            _METRIC_IMPL.update({
+                "l1_x_com": ("l1_x_com_error", _mae, False, "x_com"),
+                "l2_x_com": ("l2_x_com_error", _mse, True, "x_com"),
+            })
+        if dataset_name == "LaserDroplet":
+            _METRIC_IMPL.update({
+                "l1_drop_outer_rad": ("l1_drop_outer_rad_error", _mae, False, "outer_radius"),
+                "l2_drop_outer_rad": ("l2_drop_outer_rad_error", _mse, True, "outer_radius"),
+            })
+
+    if "Velocity_X" in channel_names and "Velocity_Y" in channel_names:
+        _METRIC_IMPL.update({
+            "l1_VP": ("l1_VP_error", _mae, False, "VP"),
+            "l2_VP": ("l2_VP_error", _mse, True, "VP"),
+        })
+        if "Density" in channel_names:  # KE needs U, V, and rho
+            _METRIC_IMPL.update({
+                "l1_KE": ("l1_KE_error", _mae, False, "KE"),
+                "l2_KE": ("l2_KE_error", _mse, True, "KE"),
+            })
+
+    # Optionally filter the requested metrics to only those available
+    metrics = [m for m in metrics if m in _METRIC_IMPL]
 
     metric_name_to_values = {}
 

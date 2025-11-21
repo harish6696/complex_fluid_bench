@@ -6,7 +6,8 @@ from utils.load_data import fetch_dataset
 from utils.plot_progress import build_info_strings
 from utils.plot_progress import plot_examples, preprocess_for_plotting, plot_rollout_metrics
 from utils.plot_progress import plot_multi_run_rollout_metrics
-from metrics.default_metrics import l1_error, l2_error, compute_metrics_for_n_rollouts
+from metrics.default_metrics import l1_error, l2_error, compute_metrics_for_n_rollouts, center_of_mass_from_density, idx_finder
+from utils.compute_stats import re_normalize_data
 from transformers.trainer import EvalPrediction
 from transformers import TrainingArguments
 from train.trainer import Trainer
@@ -156,27 +157,103 @@ def get_trainer(
         )
         targets = eval_pred.label_ids
 
-        preds_rho = preds[:, :, 0:1, :, :]
-        targets_rho = targets[:, :, 0:1, :, :]
-        
-        preds_rho_grad_x = np.gradient(preds_rho, axis=3)
-        preds_rho_grad_y = np.gradient(preds_rho, axis=4)
-        preds_rho_grad = np.sqrt(preds_rho_grad_x**2 + preds_rho_grad_y**2)
+        if "Density" in data_config["filter_features"]["filter_out_channels"]:
+            preds_rho = preds[:, :, 0:1, :, :]
+            targets_rho = targets[:, :, 0:1, :, :]
+        if "Velocity_X" in data_config["filter_features"]["filter_out_channels"]:
+            preds_vel_x = preds[:, :, 2:3, :, :]
+            targets_vel_x = targets[:, :, 2:3, :, :]
+        if "Velocity_Y" in data_config["filter_features"]["filter_out_channels"]:
+            preds_vel_y = preds[:, :, 3:4, :, :]
+            targets_vel_y = targets[:, :, 3:4, :, :]
+        # Denormalize rho for physics-based metrics if stats are available
 
-        targets_rho_grad_x = np.gradient(targets_rho, axis=3)
-        targets_rho_grad_y = np.gradient(targets_rho, axis=4)
-        targets_rho_grad = np.sqrt(targets_rho_grad_x**2 + targets_rho_grad_y**2)
+        out_channel_names_cfg = data_config["filter_features"]["filter_out_channels"]
+        norm_stats = data_config.get("data_normalization_stats", None)
+        norm_strategy = data_config.get("data_normalization_strategy", None)
+        if (
+            out_channel_names_cfg is not None
+            and len(out_channel_names_cfg) > 0
+            and norm_stats is not None
+            and norm_strategy is not None
+        ):
+            if "Density" in data_config["filter_features"]["filter_out_channels"]:
+                
+                #Raw density 
+                preds_rho_denorm = re_normalize_data(preds_rho, norm_stats["Density"], norm_strategy)
+                print(f"Count of negative values in density prediction: {np.sum(preds_rho_denorm < 0)} out of {preds_rho_denorm.size} with {np.sum(preds_rho_denorm < 0) / preds_rho_denorm.size * 100:.2f}%")
+                preds_rho_denorm[preds_rho_denorm < 0] = 0 #set negative values to 0
+                targets_rho_denorm = re_normalize_data(targets_rho, norm_stats["Density"], norm_strategy)
+                
+                #Compressibility through density gradient
+                preds_rho_grad_x = np.gradient(preds_rho_denorm, axis=3)
+                preds_rho_grad_y = np.gradient(preds_rho_denorm, axis=4)
+                preds_rho_grad = np.sqrt(preds_rho_grad_x**2 + preds_rho_grad_y**2)
+
+                targets_rho_grad_x = np.gradient(targets_rho_denorm, axis=3)
+                targets_rho_grad_y = np.gradient(targets_rho_denorm, axis=4)
+                targets_rho_grad = np.sqrt(targets_rho_grad_x**2 + targets_rho_grad_y**2)
+
+                # Center of mass from density (normalized coords in [0, 1]), do this only for dataset_name = 'Aerobreakup'
+                if data_config["dataset_name"] == "Aerobreakup":
+                    com_preds = center_of_mass_from_density(preds_rho_denorm)    # (B, T, 1) - x only
+                    com_targets = center_of_mass_from_density(targets_rho_denorm)  # (B, T, 1) - x only
+
+                if data_config["dataset_name"] == "LaserDroplet":
+                    preds_axis = preds_rho_denorm[..., 0] #extract the first column of the rho field
+                    preds_axis_diff = preds_axis[..., :1] - preds_axis[..., :-1]
+                    outer_radius_preds = idx_finder(preds_axis_diff)/data_config["grid_resolution"][0]
+                    
+                    targets_axis = targets_rho_denorm[..., 0]
+                    targets_axis_diff = targets_axis[..., :1] - targets_axis[..., :-1]
+                    outer_radius_targets = idx_finder(targets_axis_diff)/data_config["grid_resolution"][0]
+            
+            #Kinetic Energy using U,V and density
+            if "Velocity_X" in data_config["filter_features"]["filter_out_channels"] and "Velocity_Y" in data_config["filter_features"]["filter_out_channels"] and "Density" in data_config["filter_features"]["filter_out_channels"]:
+                
+                preds_vel_x_denorm = re_normalize_data(preds_vel_x, norm_stats["Velocity_X"], norm_strategy)    
+                targets_vel_x_denorm = re_normalize_data(targets_vel_x, norm_stats["Velocity_X"], norm_strategy)
+
+                preds_vel_y_denorm = re_normalize_data(preds_vel_y, norm_stats["Velocity_Y"], norm_strategy)
+                targets_vel_y_denorm = re_normalize_data(targets_vel_y, norm_stats["Velocity_Y"], norm_strategy)
+
+                preds_KE = (0.5 * ( preds_vel_x_denorm**2 + preds_vel_y_denorm**2 ) * preds_rho_denorm ).sum(axis=(3,4))
+                targets_KE = (0.5 * ( targets_vel_x_denorm**2 + targets_vel_y_denorm**2 ) * targets_rho_denorm ).sum(axis=(3,4))
+
+            #Vorticity production using U,V
+            if "Velocity_X" in data_config["filter_features"]["filter_out_channels"] and "Velocity_Y" in data_config["filter_features"]["filter_out_channels"]:
+                dpreds_u_dy, dpreds_u_dx = np.gradient(preds_vel_x_denorm, axis=(-2, -1)) # each has shape [B, R, C, X, Y]
+                dpreds_v_dy, dpreds_v_dx = np.gradient(preds_vel_y_denorm, axis=(-2, -1))
+                preds_omega = dpreds_v_dx - dpreds_u_dy
+                preds_VP = (preds_omega * preds_omega).mean(axis=(3,4))
+
+                dtargets_u_dy, dtargets_u_dx = np.gradient(targets_vel_x_denorm, axis=(-2, -1)) # each has shape [B, R, C, X, Y]
+                dtargets_v_dy, dtargets_v_dx = np.gradient(targets_vel_y_denorm, axis=(-2, -1))
+                targets_omega = dtargets_v_dx - dtargets_u_dy
+                targets_VP = (targets_omega * targets_omega).mean(axis=(3,4))
 
         # NOTE: more metrics to be added later here
         return{
             "l1_error": l1_error(preds, targets),
             "l2_error": l2_error(preds, targets),
 
-            "l1_rho_error": l1_error(preds_rho, targets_rho),
-            "l2_rho_error": l2_error(preds_rho, targets_rho),
+            "l1_rho_error": l1_error(preds_rho, targets_rho) if "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            "l2_rho_error": l2_error(preds_rho, targets_rho) if "Density" in data_config["filter_features"]["filter_out_channels"] else None,
             
-            "l1_grad_rho_error": l1_error(preds_rho_grad, targets_rho_grad),
-            "l2_grad_rho_error": l2_error(preds_rho_grad, targets_rho_grad)
+            "l1_grad_rho_error": l1_error(preds_rho_grad, targets_rho_grad) if "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            "l2_grad_rho_error": l2_error(preds_rho_grad, targets_rho_grad) if "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            
+            "l1_x_com_error": l1_error(com_preds, com_targets) if data_config["dataset_name"] == "Aerobreakup" and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            "l2_x_com_error": l2_error(com_preds, com_targets) if data_config["dataset_name"] == "Aerobreakup" and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+
+            "l1_outer_radius_error": l1_error(outer_radius_preds, outer_radius_targets) if data_config["dataset_name"] == "LaserDroplet" and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            "l2_outer_radius_error": l2_error(outer_radius_preds, outer_radius_targets) if data_config["dataset_name"] == "LaserDroplet" and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+
+            "l1_KE_error": l1_error(preds_KE, targets_KE) if "Velocity_X" in data_config["filter_features"]["filter_out_channels"] and "Velocity_Y" in data_config["filter_features"]["filter_out_channels"] and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            "l2_KE_error": l2_error(preds_KE, targets_KE) if "Velocity_X" in data_config["filter_features"]["filter_out_channels"] and "Velocity_Y" in data_config["filter_features"]["filter_out_channels"] and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+
+            "l1_VP_error": l1_error(preds_VP, targets_VP) if "Velocity_X" in data_config["filter_features"]["filter_out_channels"] and "Velocity_Y" in data_config["filter_features"]["filter_out_channels"] else None,
+            "l2_VP_error": l2_error(preds_VP, targets_VP) if "Velocity_X" in data_config["filter_features"]["filter_out_channels"] and "Velocity_Y" in data_config["filter_features"]["filter_out_channels"] else None,
         }
 
     # Load pretrained model using the generic factory function
@@ -598,7 +675,11 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 ex_preds = preds[example_idx:example_idx+1]      # shape (1, R*T, C, *spatial)
                 ex_targets = targets[example_idx:example_idx+1]
                 per_rollout_metrics_ex = compute_metrics_for_n_rollouts(
-                    ex_preds, ex_targets, metrics=("l1", "l2", "l1_rho", "l2_rho", "l1_grad_rho", "l2_grad_rho" ), outputs_per_rollout=outputs_per_rollout
+                    ex_preds, ex_targets, metrics=("l1", "l2", "l1_rho", "l2_rho", "l1_grad_rho", "l2_grad_rho"), outputs_per_rollout=outputs_per_rollout,
+                    norm_stats=data_config.get("data_normalization_stats", None),
+                    norm_strategy=data_config.get("data_normalization_strategy", None),
+                    out_channel_names=output_channel_names,
+                    denormalize_for_physics=True
                 )
                 ex_title = f"Per-rollout metrics ({data_config.get('dataset_name', 'dataset')} - random start, example {int(example_idx)})"
                 plot_rollout_metrics(
@@ -640,11 +721,32 @@ def run_inference_for_each_experiment(experiment_dir, infer_config):
                 extra_dims = preds.shape[4:]
                 preds = preds.reshape(n, n_rollouts * seq_len, c, *extra_dims) # (N, R*T, C, *spatial)
 
+
+            if data_config["dataset_name"] == "Aerobreakup":
             # Compute per-rollout metrics; also compute per-timestep metrics for IC start
-            per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
-                preds, targets, outputs_per_rollout=outputs_per_rollout, metrics=("l1", "l2", "l1_rho", "l2_rho", "l1_grad_rho", "l2_grad_rho" ), include_per_timestep=True
-            )
-            
+                per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
+                    preds, targets, outputs_per_rollout=outputs_per_rollout, metrics=("l1", "l2", "l1_x_com", "l2_x_com", "l1_KE", "l2_KE", "l1_VP", "l2_VP"), include_per_timestep=True,
+                    norm_stats=data_config.get("data_normalization_stats", None),
+                    norm_strategy=data_config.get("data_normalization_strategy", None),
+                    out_channel_names=data_config["filter_features"]["filter_out_channels"],
+                    denormalize_for_physics=True,
+                    dataset_name=data_config["dataset_name"],
+                    channel_names=data_config["filter_features"]["filter_out_channels"]
+                )
+
+            if data_config["dataset_name"] == "LaserDroplet":
+                per_rollout_step_metrics_ic = compute_metrics_for_n_rollouts(
+                    preds, targets, outputs_per_rollout=outputs_per_rollout, metrics=("l1", "l2", "l1_drop_outer_rad", "l2_drop_outer_rad", "l1_KE", "l2_KE", "l1_VP", "l2_VP"), include_per_timestep=True,
+                    norm_stats=data_config.get("data_normalization_stats", None),
+                    norm_strategy=data_config.get("data_normalization_strategy", None),
+                    out_channel_names=data_config["filter_features"]["filter_out_channels"],
+                    denormalize_for_physics=True,
+                    dataset_name=data_config["dataset_name"],
+                    grid_resolution=data_config["grid_resolution"],
+                    channel_names=data_config["filter_features"]["filter_out_channels"]
+                )
+
+                #preds, targets, outputs_per_rollout=outputs_per_rollout, metrics=("l1", "l2", "l1_rho", "l2_rho", "l1_grad_rho", "l2_grad_rho", "l1_x_com", "l2_x_com"), include_per_timestep=True,
             errors = {}
             for metric_name, values in per_rollout_step_metrics_ic.items():
                 print(f"{metric_name} per-step (IC start): {values}")
