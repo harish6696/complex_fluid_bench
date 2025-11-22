@@ -156,6 +156,15 @@ def get_trainer(
             *spatial,
         )
         targets = eval_pred.label_ids
+        # Relative error helpers
+        def _rel_l1(a, b, eps=1e-12):
+            num = np.sum(np.abs(a - b))
+            den = np.sum(np.abs(b)) + eps
+            return num / den
+        def _rel_l2(a, b, eps=1e-12):
+            num = np.sum((a - b) ** 2)
+            den = np.sum(b ** 2) + eps
+            return np.sqrt(num / den)
 
         if "Density" in data_config["filter_features"]["filter_out_channels"]:
             preds_rho = preds[:, :, 0:1, :, :]
@@ -217,8 +226,12 @@ def get_trainer(
                 preds_vel_y_denorm = re_normalize_data(preds_vel_y, norm_stats["Velocity_Y"], norm_strategy)
                 targets_vel_y_denorm = re_normalize_data(targets_vel_y, norm_stats["Velocity_Y"], norm_strategy)
 
-                preds_KE = (0.5 * ( preds_vel_x_denorm**2 + preds_vel_y_denorm**2 ) * preds_rho_denorm ).sum(axis=(3,4))
-                targets_KE = (0.5 * ( targets_vel_x_denorm**2 + targets_vel_y_denorm**2 ) * targets_rho_denorm ).sum(axis=(3,4))
+                if data_config["dataset_name"] == "Aerobreakup":
+                    preds_KE = (0.5 * ( preds_vel_x_denorm**2 + preds_vel_y_denorm**2 ) * preds_rho_denorm * (1.171875000e-05)**2).sum(axis=(3,4))
+                    targets_KE = (0.5 * ( targets_vel_x_denorm**2 + targets_vel_y_denorm**2 ) * targets_rho_denorm * (1.171875000e-05)**2).sum(axis=(3,4))
+                if data_config["dataset_name"] == "LaserDroplet":
+                    preds_KE = (0.5 * ( preds_vel_x_denorm**2 + preds_vel_y_denorm**2 ) * preds_rho_denorm * (1.25e-07)**2).sum(axis=(3,4))
+                    targets_KE = (0.5 * ( targets_vel_x_denorm**2 + targets_vel_y_denorm**2 ) * targets_rho_denorm * (1.25e-07)**2).sum(axis=(3,4))
 
             #Vorticity production using U,V
             if "Velocity_X" in data_config["filter_features"]["filter_out_channels"] and "Velocity_Y" in data_config["filter_features"]["filter_out_channels"]:
@@ -236,24 +249,38 @@ def get_trainer(
         return{
             "l1_error": l1_error(preds, targets),
             "l2_error": l2_error(preds, targets),
+            "rel_l1_error": _rel_l1(preds, targets),
+            "rel_l2_error": _rel_l2(preds, targets),
 
             "l1_rho_error": l1_error(preds_rho, targets_rho) if "Density" in data_config["filter_features"]["filter_out_channels"] else None,
             "l2_rho_error": l2_error(preds_rho, targets_rho) if "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            "rel_l1_rho_error": _rel_l1(preds_rho, targets_rho) if "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            "rel_l2_rho_error": _rel_l2(preds_rho, targets_rho) if "Density" in data_config["filter_features"]["filter_out_channels"] else None,
             
             "l1_grad_rho_error": l1_error(preds_rho_grad, targets_rho_grad) if "Density" in data_config["filter_features"]["filter_out_channels"] else None,
             "l2_grad_rho_error": l2_error(preds_rho_grad, targets_rho_grad) if "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            "rel_l1_grad_rho_error": _rel_l1(preds_rho_grad, targets_rho_grad) if "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            "rel_l2_grad_rho_error": _rel_l2(preds_rho_grad, targets_rho_grad) if "Density" in data_config["filter_features"]["filter_out_channels"] else None,
             
             "l1_x_com_error": l1_error(com_preds, com_targets) if data_config["dataset_name"] == "Aerobreakup" and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
             "l2_x_com_error": l2_error(com_preds, com_targets) if data_config["dataset_name"] == "Aerobreakup" and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            "rel_l1_x_com_error": _rel_l1(com_preds, com_targets) if data_config["dataset_name"] == "Aerobreakup" and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            "rel_l2_x_com_error": _rel_l2(com_preds, com_targets) if data_config["dataset_name"] == "Aerobreakup" and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
 
             "l1_outer_radius_error": l1_error(outer_radius_preds, outer_radius_targets) if data_config["dataset_name"] == "LaserDroplet" and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
             "l2_outer_radius_error": l2_error(outer_radius_preds, outer_radius_targets) if data_config["dataset_name"] == "LaserDroplet" and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            "rel_l1_outer_radius_error": _rel_l1(outer_radius_preds, outer_radius_targets) if data_config["dataset_name"] == "LaserDroplet" and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            "rel_l2_outer_radius_error": _rel_l2(outer_radius_preds, outer_radius_targets) if data_config["dataset_name"] == "LaserDroplet" and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
 
             "l1_KE_error": l1_error(preds_KE, targets_KE) if "Velocity_X" in data_config["filter_features"]["filter_out_channels"] and "Velocity_Y" in data_config["filter_features"]["filter_out_channels"] and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
             "l2_KE_error": l2_error(preds_KE, targets_KE) if "Velocity_X" in data_config["filter_features"]["filter_out_channels"] and "Velocity_Y" in data_config["filter_features"]["filter_out_channels"] and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            "rel_l1_KE_error": _rel_l1(preds_KE, targets_KE) if "Velocity_X" in data_config["filter_features"]["filter_out_channels"] and "Velocity_Y" in data_config["filter_features"]["filter_out_channels"] and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
+            "rel_l2_KE_error": _rel_l2(preds_KE, targets_KE) if "Velocity_X" in data_config["filter_features"]["filter_out_channels"] and "Velocity_Y" in data_config["filter_features"]["filter_out_channels"] and "Density" in data_config["filter_features"]["filter_out_channels"] else None,
 
             "l1_VP_error": l1_error(preds_VP, targets_VP) if "Velocity_X" in data_config["filter_features"]["filter_out_channels"] and "Velocity_Y" in data_config["filter_features"]["filter_out_channels"] else None,
             "l2_VP_error": l2_error(preds_VP, targets_VP) if "Velocity_X" in data_config["filter_features"]["filter_out_channels"] and "Velocity_Y" in data_config["filter_features"]["filter_out_channels"] else None,
+            "rel_l1_VP_error": _rel_l1(preds_VP, targets_VP) if "Velocity_X" in data_config["filter_features"]["filter_out_channels"] and "Velocity_Y" in data_config["filter_features"]["filter_out_channels"] else None,
+            "rel_l2_VP_error": _rel_l2(preds_VP, targets_VP) if "Velocity_X" in data_config["filter_features"]["filter_out_channels"] and "Velocity_Y" in data_config["filter_features"]["filter_out_channels"] else None,
         }
 
     # Load pretrained model using the generic factory function
