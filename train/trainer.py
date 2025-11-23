@@ -415,9 +415,7 @@ class Trainer(Trainer_):
         return prediction
 
     ## overrides the inner training loop for the Trainer class - temporary solution for testing out torch profiler
-    def _inner_training_loop(
-        self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None
-    ):  
+    def _inner_training_loop(self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None):  
         
         self.accelerator.free_memory()
         self._train_batch_size = batch_size
@@ -670,12 +668,19 @@ class Trainer(Trainer_):
             if args.gradient_accumulation_steps == 1:
                 total_updates -= 1
 
+            def trace_handler(p):
+                print(p.key_averages().table(sort_by="self_cuda_time_total", row_limit=30))
+                p.export_chrome_trace("./trace.json")
+
             # Profile desired number of batches in every epoch (this should probably be changed to skip earlier epochs)
             with profile(
                 activities=[ProfilerActivity.CPU, 
                             ProfilerActivity.CUDA], 
                 record_shapes=False, 
-                schedule=torch.profiler.schedule(wait=0, warmup=100, active=100, repeat=1)
+                schedule=torch.profiler.schedule(wait=0, warmup=150, active=5, repeat=1),
+                on_trace_ready=trace_handler,
+                profile_memory=True,
+                # with_stack=True
             ) as prof: 
                 for _ in range(total_updates):
                     update_step += 1
@@ -817,7 +822,7 @@ class Trainer(Trainer_):
                         break
             
             # Print the profiler information for the epoch
-            print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=20))
+            # print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=30))
             
             if step < 0:
                 logger.warning(
