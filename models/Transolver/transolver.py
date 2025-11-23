@@ -247,29 +247,30 @@ class Transolver2D(PreTrainedModel):
         self.W = config.grid_resolution[1]
         self.ref = config.ref
         self.unified_pos = config.unified_pos
-        self.fun_dim = config.in_channels*config.sequence_info[0] + (2 if self.config.coord_features else 0) # 2 for x and y coordinates
+        self.fun_dim = config.in_channels*config.sequence_info[0] 
         self.out_dim = config.out_channels*config.sequence_info[1]
         self.n_hidden = config.latent_channels
 
         if self.unified_pos:
             pos = self.get_grid()
             self.register_buffer("pos", pos)
-            self.preprocess = MLP(self.fun_dim + self.ref * self.ref, 
+            self.preprocess = MLP(self.fun_dim + self.ref * self.ref + (2 if self.config.coord_features else 0), # 2 for x and y coordinates, ref*ref for reference grid
                                     self.n_hidden * 2, 
                                     self.n_hidden, 
                                     n_layers=0, 
                                     res=False, 
                                     activation_fn_name=config.activation_fn_name)
         else:
-            self.preprocess = MLP(self.fun_dim + config.embedding_dim, 
-                                    self.n_hidden * 2, self.n_hidden, 
+            self.preprocess = MLP(self.fun_dim + (2 if self.config.coord_features else 0), 
+                                    self.n_hidden * 2, 
+                                    self.n_hidden, 
                                     n_layers=0, 
                                     res=False, 
                                     activation_fn_name=config.activation_fn_name)
 
-        self.Time_Input = config.time_input
+        #self.Time_Input = config.time_input
         self.n_hidden = config.latent_channels
-        self.space_dim = config.embedding_dim
+        #self.space_dim = config.embedding_dim
         if config.time_input:
             self.time_fc = nn.Sequential(nn.Linear(self.n_hidden, self.n_hidden), nn.SiLU(), nn.Linear(self.n_hidden, self.n_hidden))
 
