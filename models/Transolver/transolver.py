@@ -247,7 +247,7 @@ class Transolver2D(PreTrainedModel):
         self.W = config.grid_resolution[1]
         self.ref = config.ref
         self.unified_pos = config.unified_pos
-        self.fun_dim = config.in_channels*config.sequence_info[0]
+        self.fun_dim = config.in_channels*config.sequence_info[0] + (2 if self.config.coord_features else 0) # 2 for x and y coordinates
         self.out_dim = config.out_channels*config.sequence_info[1]
         self.n_hidden = config.latent_channels
 
@@ -333,21 +333,10 @@ class Transolver2D(PreTrainedModel):
         return pos
 
     def forward(self, fx, **kwargs):
-        """Apply the 2D Transolver to a grid tensor.
-
-        Parameters
-        ----------
-        fx : Tensor
-            Input grid tensor of shape [batch, in_channels, H, W].
-            The number of channels typically equals `in_channels * input_seq`.
-
-        Returns
-        -------
-        Tensor
-            Output grid tensor of shape [batch, out_channels, H, W].
-        """
-        #if self.config.coord_features:
-            #coord_feat = twod_meshgrid(list(fx.shape), fx.device)
+        if self.config.coord_features:
+            coord_feat = twod_meshgrid(list(fx.shape), fx.device)
+            fx = torch.cat((fx, coord_feat), dim=1)
+            
         fx_original_input_size = fx.shape[1]
         fx = fx.permute(0,2,3,1).reshape(fx.shape[0], -1, fx_original_input_size)  # B N C
 
