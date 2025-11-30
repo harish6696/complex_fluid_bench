@@ -1,7 +1,8 @@
 logging: 
   output_dir: null
   checkpoint_prefix: null
-  wandb: False  
-  wandb_project: null
+  wandb: True  
+  wandb_project: scaling
   wandb_entity: null
   disable_progress_bar: False
+  wandb_api_key: null

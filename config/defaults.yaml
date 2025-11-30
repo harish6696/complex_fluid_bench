@@ -1,6 +1,6 @@
 defaults:
   - data_config: fluids/KS/2d_ks_data_default.yaml
-  - model_config: FNO/fno_1M
+  - model_config: UNet/unet_1M
   - output_log_config: default_output_log
   - scheduler_config: default_scheduler
   - train_config: default_training

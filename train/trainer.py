@@ -414,6 +414,7 @@ class Trainer(Trainer_):
     
         return prediction
 
+    '''
     ## overrides the inner training loop for the Trainer class - temporary solution for testing out torch profiler
     def _inner_training_loop(self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None):  
         
@@ -908,6 +909,8 @@ class Trainer(Trainer_):
 
         return TrainOutput(self.state.global_step, train_loss, metrics)
 
+    '''
+    
     ##overrides the one in the base class from transformers library
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None): 
         """

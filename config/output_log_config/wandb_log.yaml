@@ -2,7 +2,7 @@ logging:
   output_dir: null
   checkpoint_prefix: null # Optional prefix for checkpoints directory, should be a string
   wandb: True  
-  wandb_project: 'wandb_trials'
+  wandb_project: 'scaling'
   wandb_run_name: null
   disable_progress_bar: True
   wandb_api_key: null
